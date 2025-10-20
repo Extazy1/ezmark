@@ -41,10 +41,22 @@ export function EditorNavbar({ exam, isSaved = true, onSave, onExportPDF }: Edit
         setShowExportDialog(true);
         setExportedPdfUrl(null);
 
-        await onSave(exam)
-        const url = await onExportPDF();
-        setExportedPdfUrl(url);
-        setIsExporting(false);
+        try {
+            await onSave(exam);
+            const url = await onExportPDF();
+            setExportedPdfUrl(url);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "PDF generation failed";
+            toast({
+                variant: "destructive",
+                title: "Export failed",
+                description: message,
+                duration: 2000
+            });
+            setShowExportDialog(false);
+        } finally {
+            setIsExporting(false);
+        }
     }
 
     const handlePreviewPDF = () => {

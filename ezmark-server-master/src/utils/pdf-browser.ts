@@ -5,6 +5,63 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
+type ChromeAwsLambdaModule = {
+  executablePath: () => Promise<string | null>;
+  args?: string[];
+  headless?: LaunchOptions["headless"];
+  defaultViewport?: LaunchOptions["defaultViewport"];
+  env?: LaunchOptions["env"];
+} | null;
+
+const chromeArgs = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--ignore-certificate-errors",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+];
+
+const chromeAwsLambdaModule: { instance: ChromeAwsLambdaModule | undefined } = {
+  instance: undefined,
+};
+
+const loadChromeAwsLambda = (): ChromeAwsLambdaModule => {
+  if (chromeAwsLambdaModule.instance !== undefined) {
+    return chromeAwsLambdaModule.instance;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const required = require("chrome-aws-lambda");
+    const resolved = required?.default ?? required;
+    if (resolved && typeof resolved.executablePath === "function") {
+      chromeAwsLambdaModule.instance = resolved as ChromeAwsLambdaModule;
+    } else {
+      chromeAwsLambdaModule.instance = null;
+    }
+  } catch (error) {
+    strapi.log.debug(
+      "chrome-aws-lambda is not available; falling back to Puppeteer's bundled Chrome",
+      error
+    );
+    chromeAwsLambdaModule.instance = null;
+  }
+
+  return chromeAwsLambdaModule.instance;
+};
+
+interface ChromeLaunchStrategy {
+  executablePath: string;
+  headless?: LaunchOptions["headless"];
+  args?: string[];
+  defaultViewport?: LaunchOptions["defaultViewport"];
+  env?: LaunchOptions["env"];
+}
+
+const cachedStrategy: { promise: Promise<ChromeLaunchStrategy> | null } = {
+  promise: null,
+};
+
 const cachedExecutablePath: { promise: Promise<string> | null } = {
   promise: null,
 };
@@ -95,29 +152,78 @@ export const ensureChromeExecutable = async (): Promise<string> => {
   return cachedExecutablePath.promise;
 };
 
-export const resolvePdfLaunchOptions = async (): Promise<LaunchOptions> => {
-  const baseOptions: LaunchOptions = {
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--ignore-certificate-errors",
-    ],
-  };
+const computeChromeLaunchStrategy = async (): Promise<ChromeLaunchStrategy> => {
+  const chromeAwsLambda = loadChromeAwsLambda();
+  if (chromeAwsLambda) {
+    try {
+      const executablePath = await chromeAwsLambda.executablePath();
+      if (executablePath) {
+        strapi.log.debug(
+          `Using chrome-aws-lambda binary at ${executablePath} for PDF generation`
+        );
+        return {
+          executablePath,
+          headless: chromeAwsLambda.headless ?? true,
+          args: chromeAwsLambda.args,
+          defaultViewport: chromeAwsLambda.defaultViewport,
+          env: chromeAwsLambda.env,
+        };
+      }
+      strapi.log.warn(
+        "chrome-aws-lambda did not provide an executable path; falling back to Puppeteer defaults"
+      );
+    } catch (error) {
+      strapi.log.warn(
+        "Failed to resolve chrome-aws-lambda executable, falling back to Puppeteer's Chrome",
+        error
+      );
+    }
+  }
 
   const executablePath = await ensureChromeExecutable();
-  baseOptions.executablePath = executablePath;
+  return {
+    executablePath,
+    headless: true,
+  };
+};
 
-  return baseOptions;
+export const resolvePdfLaunchOptions = async (): Promise<LaunchOptions> => {
+  if (!cachedStrategy.promise) {
+    cachedStrategy.promise = computeChromeLaunchStrategy().catch((error) => {
+      cachedStrategy.promise = null;
+      throw error;
+    });
+  }
+
+  const strategy = await cachedStrategy.promise;
+  const args = Array.from(
+    new Set([...(strategy.args ?? []), ...chromeArgs])
+  );
+
+  const options: LaunchOptions = {
+    headless: strategy.headless ?? true,
+    args,
+    executablePath: strategy.executablePath,
+  };
+
+  if (strategy.defaultViewport) {
+    options.defaultViewport = strategy.defaultViewport;
+  }
+
+  if (strategy.env) {
+    options.env = strategy.env;
+  }
+
+  return options;
 };
 
 export const warmupChrome = async () => {
   const start = Date.now();
   try {
-    const executable = await ensureChromeExecutable();
+    const strategy = await resolvePdfLaunchOptions();
     const duration = Date.now() - start;
     strapi.log.info(
-      `Chrome executable ready for PDF exports at ${executable} (prepared in ${duration}ms)`
+      `Chrome executable ready for PDF exports at ${strategy.executablePath} (prepared in ${duration}ms)`
     );
   } catch (error) {
     strapi.log.error("Failed to prepare Chrome executable during bootstrap", error);

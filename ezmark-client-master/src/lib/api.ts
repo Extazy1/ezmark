@@ -56,7 +56,17 @@ export async function updateExam(documentId: string, examData: ExamResponse) {
 
 export async function getExportedPDFUrl(documentId: string) {
     const response = await axiosInstance.get<PDFReponse>(`/pdfs/${documentId}`);
-    return response.data.data.url;
+    const payload = response.data as PDFReponse & {
+        error?: { message?: string };
+        success?: boolean;
+    };
+
+    if (!payload?.data?.url) {
+        const message = payload?.error?.message || "PDF generation failed";
+        throw new Error(message);
+    }
+
+    return payload.data.url;
 }
 
 /**
