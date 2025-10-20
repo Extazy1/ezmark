@@ -234,11 +234,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           })
         | undefined;
 
-      const hasValidStatus = response && response.status >= 200 && response.status < 300;
+      const status = response?.status ?? 0;
+      const hasValidStatus = status >= 200 && status < 300;
+      const isNotModified = status === 304;
       const isErrorPayload = profile?.success === false || profile?.error;
 
-      if (!hasValidStatus || !profile || isErrorPayload) {
-        throw new Error("Failed to load user profile");
+      if (!hasValidStatus && !isNotModified) {
+        throw new Error(`Failed to load user profile (status: ${status || "n/a"})`);
+      }
+
+      if (isErrorPayload) {
+        throw new Error("Failed to load user profile (payload error)");
+      }
+
+      if (isNotModified) {
+        if (storedUser) {
+          logAuth("hydrateSession:profile-not-modified");
+          applyUser(storedUser, "not-modified");
+        } else {
+          logAuth("hydrateSession:profile-not-modified-no-cache");
+        }
+        return;
+      }
+
+      if (!profile) {
+        throw new Error("Failed to load user profile (empty body)");
       }
 
       applyUser({
