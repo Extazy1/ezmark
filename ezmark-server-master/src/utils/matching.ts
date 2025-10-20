@@ -4,7 +4,6 @@ import fs from 'fs';
 import { ExamResponse } from "../../types/exam";
 import { PDFDocument } from "pdf-lib";
 import pdf2png from "./pdf2png";
-import { nanoid } from "nanoid";
 import sharp from "sharp";
 import { mmToPixels } from "./tools";
 import { recognizeHeader } from "./llm";
@@ -12,6 +11,16 @@ import { recognizeHeader } from "./llm";
 const PADDING = 10;
 
 // 启动一个异步任务，专门处理流水线
+let nanoidGenerator: (() => string) | null = null;
+
+async function getNanoid() {
+    if (!nanoidGenerator) {
+        const { nanoid } = await import('nanoid');
+        nanoidGenerator = nanoid;
+    }
+    return nanoidGenerator;
+}
+
 export async function startMatching(documentId: string) {
     // 1. 先通过documentId获得schedule
     const scheduleData = await strapi.documents('api::schedule.schedule').findOne({
@@ -76,6 +85,7 @@ export async function startMatching(documentId: string) {
     const papers: Paper[] = [] // 保存所有试卷的id, startPage, endPage
     const headerComponentId = exam.examData.components.find(com => com.type === 'default-header').id;
     const headerImagePaths = []
+    const nanoid = await getNanoid();
     for (let i = 0; i < studentCount; i++) {
         const paperId = nanoid()
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
