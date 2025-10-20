@@ -1,7 +1,8 @@
 export default {
   rest: {
-    defaultLimit: 25,
-    maxLimit: 100,
+    prefix: "/strapi/api",
+    defaultLimit: 100,
+    maxLimit: 1000,
     withCount: true,
   },
 };
