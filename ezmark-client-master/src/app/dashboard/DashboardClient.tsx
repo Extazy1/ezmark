@@ -1,17 +1,82 @@
-// app/dashboard/DashboardClient.tsx
 "use client";
 
-import React from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Cookies from "js-cookie";
+import { Loader2 } from "lucide-react";
 
-export default function DashboardClient() {
-  // 只能在浏览器的逻辑，放到 effect/事件里
-  const isBrowser =
-    typeof window !== "undefined" && typeof File !== "undefined";
+import { DashboardLayout } from "@/components/dashboard";
+import { useAuth } from "@/context/Auth";
 
-  React.useEffect(() => {
-    if (!isBrowser) return;
-    // 这里写用到 File / FileReader / window 的初始化逻辑
-  }, [isBrowser]);
+const DashboardClient = () => {
+  const {
+    authenticated,
+    setAuthenticated,
+    setDocumentId,
+    setEmail,
+    setId,
+    setJwt,
+    setUserName,
+  } = useAuth();
+  const router = useRouter();
+  const [isHydrating, setIsHydrating] = useState(true);
 
-  return <div>{/* 你的 Dashboard UI 放这里（含文件上传/下载等） */}</div>;
-}
+  useEffect(() => {
+    const jwt = Cookies.get("jwt");
+
+    if (!jwt) {
+      setIsHydrating(false);
+      router.replace("/auth/login");
+      return;
+    }
+
+    setJwt(jwt);
+
+    if (!authenticated) {
+      const storedUserName = localStorage.getItem("userName");
+      const storedEmail = localStorage.getItem("email");
+      const storedId = localStorage.getItem("id");
+      const storedDocumentId = localStorage.getItem("documentId");
+
+      if (
+        storedUserName &&
+        storedEmail &&
+        storedId &&
+        storedDocumentId
+      ) {
+        setUserName(storedUserName);
+        setEmail(storedEmail);
+        setId(storedId);
+        setDocumentId(storedDocumentId);
+        setAuthenticated(true);
+      }
+    }
+
+    setIsHydrating(false);
+  }, [
+    authenticated,
+    router,
+    setAuthenticated,
+    setDocumentId,
+    setEmail,
+    setId,
+    setJwt,
+    setUserName,
+  ]);
+
+  if (isHydrating) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!authenticated) {
+    return null;
+  }
+
+  return <DashboardLayout />;
+};
+
+export default DashboardClient;
