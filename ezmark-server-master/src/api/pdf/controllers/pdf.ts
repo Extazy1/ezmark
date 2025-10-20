@@ -1,6 +1,75 @@
 import puppeteer from "puppeteer";
+import type { LaunchOptions } from "puppeteer";
 import fs from "fs";
 import path from "path";
+
+const trimTrailingSlashes = (value: string) => value.replace(/\/+$/, "");
+
+const resolveEnvBaseUrl = () => {
+  const candidates = [
+    process.env.PDF_RENDER_BASE_URL,
+    process.env.RENDER_BASE_URL,
+    process.env.FRONTEND_BASE_URL,
+    process.env.PUBLIC_FRONTEND_URL,
+    process.env.CLIENT_BASE_URL,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return trimTrailingSlashes(candidate.trim());
+    }
+  }
+
+  return undefined;
+};
+
+const resolveRenderBaseUrl = (ctx: any) => {
+  const fromEnv = resolveEnvBaseUrl();
+  if (fromEnv) {
+    return fromEnv;
+  }
+
+  const forwardedHost =
+    ctx.request?.header?.["x-forwarded-host"] ?? ctx.request?.header?.host;
+  const forwardedProto =
+    ctx.request?.header?.["x-forwarded-proto"]?.split(",")[0]?.trim();
+
+  if (forwardedHost) {
+    const protocol =
+      forwardedProto || (ctx.request?.secure ? "https" : "http") || "http";
+    return trimTrailingSlashes(`${protocol}://${forwardedHost}`);
+  }
+
+  return trimTrailingSlashes(
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:3000"
+      : "http://127.0.0.1"
+  );
+};
+
+const resolveLaunchOptions = (): LaunchOptions => {
+  const baseOptions: LaunchOptions = {
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--ignore-certificate-errors",
+    ],
+  };
+
+  const executablePath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    process.env.CHROMIUM_EXECUTABLE_PATH ||
+    (process.env.NODE_ENV === "development"
+      ? undefined
+      : "/usr/bin/chromium-browser");
+
+  if (executablePath) {
+    baseOptions.executablePath = executablePath;
+  }
+
+  return baseOptions;
+};
 
 const MARGIN_X = 0;
 const MARGIN_Y = 0;
@@ -17,13 +86,12 @@ export default {
       });
     }
 
+    const renderBaseUrl = resolveRenderBaseUrl(ctx);
+
     try {
       // 从参数中获取documentId
       const documentId = ctx.params.id;
-      const URL =
-        process.env.NODE_ENV === "development"
-          ? `http://localhost:3000/render/${documentId}`
-          : `https://47.82.94.221/render/${documentId}`;
+      const URL = `${renderBaseUrl}/render/${documentId}`;
       // 从请求头获取JWT
       const JWT = ctx.request.header.authorization;
 
@@ -37,27 +105,32 @@ export default {
       const pdfFileName = `Exam-${documentId}.pdf`;
       const pdfPath = path.join(pdfDir, pdfFileName);
 
-      console.log(`开始生成pdf文件 ${documentId}`);
-      const browser = await puppeteer.launch(
-        process.env.NODE_ENV === "development"
-          ? {}
-          : {
-              executablePath: "/usr/bin/chromium-browser", // 生产环境需要指定浏览器路径
-            }
-      );
-      console.log(`浏览器启动成功 ${documentId}`);
-      const page = await browser.newPage();
-      console.log(`页面启动成功 ${documentId}`);
-      await page.setExtraHTTPHeaders({
-        Authorization: JWT,
-      });
-      console.log(`开始进入网页 ${URL}`);
-      await page.goto(URL, { waitUntil: "networkidle0" });
-      console.log(`进入网页成功 ${documentId}`);
-      await page.pdf({ path: pdfPath, format: "A4" });
-      console.log(`pdf生成成功 ${documentId}`);
-      await browser.close();
-      console.log(`浏览器关闭 ${documentId}`);
+      console.log(`开始生成pdf文件 ${documentId}，使用地址 ${URL}`);
+      let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+
+      try {
+        browser = await puppeteer.launch(resolveLaunchOptions());
+        console.log(`浏览器启动成功 ${documentId}`);
+        const page = await browser.newPage();
+        console.log(`页面启动成功 ${documentId}`);
+
+        if (JWT) {
+          await page.setExtraHTTPHeaders({
+            Authorization: JWT,
+          });
+        }
+
+        console.log(`开始进入网页 ${URL}`);
+        await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });
+        console.log(`进入网页成功 ${documentId}`);
+        await page.pdf({ path: pdfPath, format: "A4" });
+        console.log(`pdf生成成功 ${documentId}`);
+      } finally {
+        if (browser) {
+          await browser.close();
+          console.log(`浏览器关闭 ${documentId}`);
+        }
+      }
 
       // 检查文件是否生成成功
       if (!fs.existsSync(pdfPath)) {
@@ -70,11 +143,16 @@ export default {
           url: `${
             process.env.NODE_ENV === "development"
               ? "http://localhost:1337"
-              : "https://47.82.94.221/strapi"
+              : trimTrailingSlashes(
+                  process.env.PUBLIC_URL ??
+                    process.env.STRAPI_PUBLIC_URL ??
+                    "https://47.82.94.221/strapi"
+                )
           }/pdf/${pdfFileName}`,
         },
       });
     } catch (error) {
+      strapi.log.error("PDF generation failed", error);
       return ctx.badRequest("PDF generation failed");
     }
   },
