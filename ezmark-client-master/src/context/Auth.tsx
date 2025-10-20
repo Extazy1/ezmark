@@ -44,6 +44,22 @@ const logAuth = (...message: unknown[]) => {
   console.info("[auth]", new Date().toISOString(), ...message);
 };
 
+const writeAuthSnapshot = (state: Record<string, unknown>) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const target = window as typeof window & {
+    __EZMARK_AUTH_STATE__?: Record<string, unknown>;
+  };
+
+  target.__EZMARK_AUTH_STATE__ = {
+    ...(target.__EZMARK_AUTH_STATE__ ?? {}),
+    ...state,
+    timestamp: new Date().toISOString(),
+  };
+};
+
 const writeStorage = (key: string, value: string) => {
   if (!key || !isBrowser()) {
     return;
@@ -179,6 +195,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setDocumentId("");
     setJwt("");
     logAuth("session cleared");
+    writeAuthSnapshot({ authenticated: false, jwt: null, user: null, phase: "clear-session" });
   }, [clearStoredSession, updateAuthenticated]);
 
   const logout = useCallback(async () => {
@@ -212,12 +229,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     updateAuthenticated(true, "hydrateSession:jwt-present");
+    writeAuthSnapshot({ phase: "jwt-present", jwt: activeJwt });
 
     const storedUser = readStoredUser();
     if (storedUser) {
       applyUser(storedUser, "localStorage");
+      writeAuthSnapshot({ phase: "local-storage", user: storedUser });
     } else {
       logAuth("hydrateSession:no-stored-user");
+      writeAuthSnapshot({ phase: "local-storage-miss" });
     }
 
     try {
@@ -251,8 +271,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (storedUser) {
           logAuth("hydrateSession:profile-not-modified");
           applyUser(storedUser, "not-modified");
+          writeAuthSnapshot({ phase: "profile-not-modified", user: storedUser });
         } else {
           logAuth("hydrateSession:profile-not-modified-no-cache");
+          writeAuthSnapshot({ phase: "profile-not-modified-no-cache" });
         }
         return;
       }
@@ -261,7 +283,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         throw new Error("Failed to load user profile (empty body)");
       }
 
-      applyUser({
+      const appliedUser = {
         userName: profile.username ?? storedUser?.userName ?? "",
         email: profile.email ?? storedUser?.email ?? "",
         id:
@@ -269,20 +291,26 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             ? String(profile.id)
             : profile.id ?? storedUser?.id ?? "",
         documentId: profile.documentId ?? storedUser?.documentId ?? "",
-      }, "remote");
+      };
+
+      applyUser(appliedUser, "remote");
       logAuth("hydrateSession:profile-loaded");
+      writeAuthSnapshot({ phase: "profile-loaded", user: appliedUser });
     } catch (error) {
       logAuth("hydrateSession:error", error);
       clearSession();
       router.replace("/auth/login");
+      writeAuthSnapshot({ phase: "error", error: String(error) });
     } finally {
       setIsLoading(false);
       logAuth("hydrateSession:complete");
+      writeAuthSnapshot({ phase: "complete", authenticated: true, isLoading: false });
     }
   }, [applyUser, clearSession, router, updateAuthenticated]);
 
   useEffect(() => {
     hydrateSession();
+    writeAuthSnapshot({ phase: "hydrate-session-effect" });
   }, [hydrateSession]);
 
   useEffect(() => {

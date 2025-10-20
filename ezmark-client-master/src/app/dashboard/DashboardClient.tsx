@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard";
 import { useAuth } from "@/context/Auth";
 import { DashboardDiagnostics } from "@/components/dashboard/DashboardDiagnostics";
+import { DashboardErrorBoundary } from "@/components/dashboard/DashboardErrorBoundary";
 
 const shouldLogAuth =
   process.env.NEXT_PUBLIC_AUTH_DEBUG === "true" || process.env.NODE_ENV !== "production";
@@ -102,6 +103,74 @@ const DashboardClient = ({ serverRenderInfo }: DashboardClientProps) => {
     }
   }, [authenticated, isLoading, router]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const target = window as typeof window & {
+      __EZMARK_DASHBOARD_EVENTS__?: Array<{
+        type: string;
+        payload: unknown;
+        timestamp: string;
+      }>;
+    };
+
+    const ensureBuffer = () => {
+      if (!Array.isArray(target.__EZMARK_DASHBOARD_EVENTS__)) {
+        target.__EZMARK_DASHBOARD_EVENTS__ = [];
+      }
+
+      return target.__EZMARK_DASHBOARD_EVENTS__;
+    };
+
+    const pushEvent = (type: string, payload: unknown) => {
+      const buffer = ensureBuffer();
+
+      buffer.push({
+        type,
+        payload,
+        timestamp: new Date().toISOString(),
+      });
+
+      // keep last 20 events to avoid unbounded growth
+      if (buffer.length > 20) {
+        buffer.splice(0, buffer.length - 20);
+      }
+    };
+
+    const handleError = (event: ErrorEvent) => {
+      pushEvent("error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        error: event.error?.stack ?? String(event.error ?? "unknown"),
+      });
+    };
+
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      pushEvent("unhandledrejection", {
+        reason: event.reason instanceof Error ? event.reason.stack : event.reason,
+      });
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+
+    pushEvent("hydrate:start", {
+      serverRenderInfo,
+    });
+
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+      pushEvent("hydrate:cleanup", {
+        serverRenderInfo,
+      });
+    };
+  }, [serverRenderInfo]);
+
   const diagnostics = useMemo(
     () => ({
       authState: { authenticated, isLoading },
@@ -134,10 +203,10 @@ const DashboardClient = ({ serverRenderInfo }: DashboardClientProps) => {
   }
 
   return (
-    <>
+    <DashboardErrorBoundary>
       {showDiagnostics ? <DashboardDiagnostics {...diagnostics} /> : null}
       <DashboardLayout />
-    </>
+    </DashboardErrorBoundary>
   );
 };
 
