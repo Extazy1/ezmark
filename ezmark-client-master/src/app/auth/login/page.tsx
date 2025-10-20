@@ -9,6 +9,7 @@ import { LoginResponse } from "@/types/types";
 import { motion } from "framer-motion";
 import { axiosInstance } from "@/lib/axios";
 import { useAuth } from "@/context/Auth";
+import { safeSetStorageItem } from "@/lib/storage";
 
 export default function LoginPage() {
   const { toast } = useToast();
@@ -37,31 +38,11 @@ export default function LoginPage() {
     setDocumentId(safeDocumentId);
     setAuthenticated(Boolean(responseData.jwt));
 
-    if (safeUserName) {
-      localStorage.setItem("userName", safeUserName);
-    } else {
-      localStorage.removeItem("userName");
-    }
-
-    if (safeEmail) {
-      localStorage.setItem("email", safeEmail);
-    } else {
-      localStorage.removeItem("email");
-    }
-
-    if (safeId) {
-      localStorage.setItem("id", safeId);
-    } else {
-      localStorage.removeItem("id");
-    }
-
-    if (safeDocumentId) {
-      localStorage.setItem("documentId", safeDocumentId);
-    } else {
-      localStorage.removeItem("documentId");
-    }
-
-    localStorage.setItem("jwt", responseData.jwt);
+    safeSetStorageItem("userName", safeUserName);
+    safeSetStorageItem("email", safeEmail);
+    safeSetStorageItem("id", safeId);
+    safeSetStorageItem("documentId", safeDocumentId);
+    safeSetStorageItem("jwt", responseData.jwt);
 
     toast({
       title: "Login Successful",

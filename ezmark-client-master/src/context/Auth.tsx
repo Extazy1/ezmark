@@ -14,6 +14,11 @@ import { useRouter } from "next/navigation";
 
 import { AuthContextObject } from "@/types/types";
 import { axiosInstance } from "@/lib/axios";
+import {
+  safeClearStorageItems,
+  safeGetStorageItem,
+  safeSetStorageItem,
+} from "@/lib/storage";
 
 type StoredUser = {
   userName: string;
@@ -61,15 +66,11 @@ const writeAuthSnapshot = (state: Record<string, unknown>) => {
 };
 
 const writeStorage = (key: string, value: string) => {
-  if (!key || !isBrowser()) {
+  if (!isBrowser() || !key) {
     return;
   }
 
-  if (value) {
-    window.localStorage.setItem(key, value);
-  } else {
-    window.localStorage.removeItem(key);
-  }
+  safeSetStorageItem(key, value);
 };
 
 const readStoredUser = (): StoredUser | null => {
@@ -77,10 +78,10 @@ const readStoredUser = (): StoredUser | null => {
     return null;
   }
 
-  const storedUserName = window.localStorage.getItem(STORAGE_KEYS.userName);
-  const storedEmail = window.localStorage.getItem(STORAGE_KEYS.email);
-  const storedId = window.localStorage.getItem(STORAGE_KEYS.id);
-  const storedDocumentId = window.localStorage.getItem(STORAGE_KEYS.documentId);
+  const storedUserName = safeGetStorageItem(STORAGE_KEYS.userName);
+  const storedEmail = safeGetStorageItem(STORAGE_KEYS.email);
+  const storedId = safeGetStorageItem(STORAGE_KEYS.id);
+  const storedDocumentId = safeGetStorageItem(STORAGE_KEYS.documentId);
 
   if (storedUserName && storedEmail && storedId && storedDocumentId) {
     return {
@@ -99,7 +100,7 @@ const readStoredJwt = () => {
     return null;
   }
 
-  return window.localStorage.getItem(STORAGE_KEYS.jwt);
+  return safeGetStorageItem(STORAGE_KEYS.jwt);
 };
 
 export const AuthContext = createContext<AuthContextObject>({} as AuthContextObject);
@@ -143,9 +144,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    Object.values(STORAGE_KEYS).forEach((key) => {
-      window.localStorage.removeItem(key);
-    });
+    safeClearStorageItems(Object.values(STORAGE_KEYS));
   }, []);
 
   const applyUser = useCallback(
@@ -204,107 +203,115 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [clearSession, router]);
 
   const hydrateSession = useCallback(async () => {
-    const cookieJwt = Cookies.get("jwt");
-    const storedJwt = readStoredJwt();
-    const activeJwt = cookieJwt ?? storedJwt ?? "";
-
-    logAuth("hydrateSession:start", {
-      hasCookieJwt: Boolean(cookieJwt),
-      hasStoredJwt: Boolean(storedJwt),
-    });
-
-    if (!activeJwt) {
-      clearSession();
-      setIsLoading(false);
-      logAuth("hydrateSession:missing-jwt");
-      return;
-    }
-
-    setJwt(activeJwt);
-    writeStorage(STORAGE_KEYS.jwt, activeJwt);
-
-    if (!cookieJwt && activeJwt) {
-      Cookies.set("jwt", activeJwt);
-      logAuth("hydrateSession:set-cookie-from-storage");
-    }
-
-    updateAuthenticated(true, "hydrateSession:jwt-present");
-    writeAuthSnapshot({ phase: "jwt-present", jwt: activeJwt });
-
-    const storedUser = readStoredUser();
-    if (storedUser) {
-      applyUser(storedUser, "localStorage");
-      writeAuthSnapshot({ phase: "local-storage", user: storedUser });
-    } else {
-      logAuth("hydrateSession:no-stored-user");
-      writeAuthSnapshot({ phase: "local-storage-miss" });
-    }
-
     try {
-      const response = await axiosInstance.get("/users/me");
+      const cookieJwt = Cookies.get("jwt");
+      const storedJwt = readStoredJwt();
+      const activeJwt = cookieJwt ?? storedJwt ?? "";
 
-      const profile = response?.data as
-        | (Partial<StoredUser> & {
-            id?: number | string;
-            username?: string;
-            email?: string;
-            documentId?: string;
-            error?: unknown;
-            success?: boolean;
-          })
-        | undefined;
+      logAuth("hydrateSession:start", {
+        hasCookieJwt: Boolean(cookieJwt),
+        hasStoredJwt: Boolean(storedJwt),
+      });
 
-      const status = response?.status ?? 0;
-      const hasValidStatus = status >= 200 && status < 300;
-      const isNotModified = status === 304;
-      const isErrorPayload = profile?.success === false || profile?.error;
-
-      if (!hasValidStatus && !isNotModified) {
-        throw new Error(`Failed to load user profile (status: ${status || "n/a"})`);
-      }
-
-      if (isErrorPayload) {
-        throw new Error("Failed to load user profile (payload error)");
-      }
-
-      if (isNotModified) {
-        if (storedUser) {
-          logAuth("hydrateSession:profile-not-modified");
-          applyUser(storedUser, "not-modified");
-          writeAuthSnapshot({ phase: "profile-not-modified", user: storedUser });
-        } else {
-          logAuth("hydrateSession:profile-not-modified-no-cache");
-          writeAuthSnapshot({ phase: "profile-not-modified-no-cache" });
-        }
+      if (!activeJwt) {
+        clearSession();
+        logAuth("hydrateSession:missing-jwt");
+        writeAuthSnapshot({ phase: "missing-jwt" });
         return;
       }
 
-      if (!profile) {
-        throw new Error("Failed to load user profile (empty body)");
+      setJwt(activeJwt);
+      writeStorage(STORAGE_KEYS.jwt, activeJwt);
+
+      if (!cookieJwt && activeJwt) {
+        Cookies.set("jwt", activeJwt);
+        logAuth("hydrateSession:set-cookie-from-storage");
       }
 
-      const appliedUser = {
-        userName: profile.username ?? storedUser?.userName ?? "",
-        email: profile.email ?? storedUser?.email ?? "",
-        id:
-          typeof profile.id === "number"
-            ? String(profile.id)
-            : profile.id ?? storedUser?.id ?? "",
-        documentId: profile.documentId ?? storedUser?.documentId ?? "",
-      };
+      updateAuthenticated(true, "hydrateSession:jwt-present");
+      writeAuthSnapshot({ phase: "jwt-present", jwt: activeJwt });
 
-      applyUser(appliedUser, "remote");
-      logAuth("hydrateSession:profile-loaded");
-      writeAuthSnapshot({ phase: "profile-loaded", user: appliedUser });
+      const storedUser = readStoredUser();
+      if (storedUser) {
+        applyUser(storedUser, "localStorage");
+        writeAuthSnapshot({ phase: "local-storage", user: storedUser });
+      } else {
+        logAuth("hydrateSession:no-stored-user");
+        writeAuthSnapshot({ phase: "local-storage-miss" });
+      }
+
+      try {
+        const response = await axiosInstance.get("/users/me");
+
+        const profile = response?.data as
+          | (Partial<StoredUser> & {
+              id?: number | string;
+              username?: string;
+              email?: string;
+              documentId?: string;
+              error?: unknown;
+              success?: boolean;
+            })
+          | undefined;
+
+        const status = response?.status ?? 0;
+        const hasValidStatus = status >= 200 && status < 300;
+        const isNotModified = status === 304;
+        const isErrorPayload = profile?.success === false || profile?.error;
+
+        if (!hasValidStatus && !isNotModified) {
+          throw new Error(`Failed to load user profile (status: ${status || "n/a"})`);
+        }
+
+        if (isErrorPayload) {
+          throw new Error("Failed to load user profile (payload error)");
+        }
+
+        if (isNotModified) {
+          if (storedUser) {
+            logAuth("hydrateSession:profile-not-modified");
+            applyUser(storedUser, "not-modified");
+            writeAuthSnapshot({ phase: "profile-not-modified", user: storedUser });
+          } else {
+            logAuth("hydrateSession:profile-not-modified-no-cache");
+            writeAuthSnapshot({ phase: "profile-not-modified-no-cache" });
+          }
+          return;
+        }
+
+        if (!profile) {
+          throw new Error("Failed to load user profile (empty body)");
+        }
+
+        const appliedUser = {
+          userName: profile.username ?? storedUser?.userName ?? "",
+          email: profile.email ?? storedUser?.email ?? "",
+          id:
+            typeof profile.id === "number"
+              ? String(profile.id)
+              : profile.id ?? storedUser?.id ?? "",
+          documentId: profile.documentId ?? storedUser?.documentId ?? "",
+        };
+
+        applyUser(appliedUser, "remote");
+        logAuth("hydrateSession:profile-loaded");
+        writeAuthSnapshot({ phase: "profile-loaded", user: appliedUser });
+      } catch (error) {
+        logAuth("hydrateSession:error", error);
+        clearSession();
+        router.replace("/auth/login");
+        writeAuthSnapshot({ phase: "error", error: String(error) });
+        return;
+      }
     } catch (error) {
-      logAuth("hydrateSession:error", error);
+      logAuth("hydrateSession:unexpected-error", error);
       clearSession();
       router.replace("/auth/login");
-      writeAuthSnapshot({ phase: "error", error: String(error) });
+      writeAuthSnapshot({ phase: "unexpected-error", error: String(error) });
     } finally {
       setIsLoading(false);
       logAuth("hydrateSession:complete");
-      writeAuthSnapshot({ phase: "complete", authenticated: true, isLoading: false });
+      writeAuthSnapshot({ phase: "complete", isLoading: false });
     }
   }, [applyUser, clearSession, router, updateAuthenticated]);
 

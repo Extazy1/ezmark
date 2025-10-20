@@ -1,8 +1,10 @@
 import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from "axios";
-import { API_HOST } from "./host";
 import Cookies from "js-cookie";
+
+import { API_HOST } from "./host";
 import { toast } from "@/hooks/use-toast";
 import { ErrorResponse } from "@/types/types";
+import { safeGetStorageItem, safeRemoveStorageItem } from "./storage";
 
 /**
  * Custom Axios instance for API requests
@@ -24,11 +26,13 @@ axiosInstance.interceptors.request.use(
         let token = Cookies.get("jwt");
 
         if (!token && typeof window !== "undefined") {
-            token = window.localStorage.getItem("jwt") ?? undefined;
+            const storedToken = safeGetStorageItem("jwt") ?? undefined;
 
-            if (token) {
-                Cookies.set("jwt", token);
+            if (storedToken) {
+                Cookies.set("jwt", storedToken);
             }
+
+            token = storedToken;
         }
 
         if (token) {
@@ -62,9 +66,7 @@ axiosInstance.interceptors.response.use(
          */
         if (error.response?.status === 401) {
             Cookies.remove("jwt");
-            if (typeof window !== "undefined") {
-                window.localStorage.removeItem("jwt");
-            }
+            safeRemoveStorageItem("jwt");
             window.location.href = "/auth/login";
             toast({
                 variant: "destructive",
