@@ -3,7 +3,7 @@
 import { ExamResponse } from "@/types/exam";
 import { Class, ExamSchedule } from "@/types/types";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -27,15 +27,27 @@ const formSchema = z.object({
 });
 
 // Define the PDF upload form schema
-const pdfUploadSchema = z.object({
-    pdfFile: z.instanceof(File)
-        .refine(file => file.type === 'application/pdf', {
-            message: "File must be a PDF",
-        })
-});
+const createPdfUploadSchema = () =>
+    z.object({
+        pdfFile: z
+            .custom<File>(
+                (value): value is File =>
+                    typeof File !== "undefined" && value instanceof File,
+                {
+                    message: "Please select a PDF file",
+                }
+            )
+            .refine(
+                file => file.type === "application/pdf",
+                {
+                    message: "File must be a PDF",
+                }
+            ),
+    });
 
 type FormValues = z.infer<typeof formSchema>;
-type PDFUploadValues = z.infer<typeof pdfUploadSchema>;
+type PDFUploadSchema = ReturnType<typeof createPdfUploadSchema>;
+type PDFUploadValues = z.infer<PDFUploadSchema>;
 
 function ExamScheduleContent() {
     const [isLoading, setIsLoading] = useState(true);
@@ -66,6 +78,8 @@ function ExamScheduleContent() {
             classId: "",
         },
     });
+
+    const pdfUploadSchema = useMemo(createPdfUploadSchema, []);
 
     const pdfUploadForm = useForm<PDFUploadValues>({
         resolver: zodResolver(pdfUploadSchema),
