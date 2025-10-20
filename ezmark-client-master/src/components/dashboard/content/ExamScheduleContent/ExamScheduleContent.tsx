@@ -1,3 +1,5 @@
+"use client";
+
 import { ExamResponse } from "@/types/exam";
 import { Class, ExamSchedule } from "@/types/types";
 import { Skeleton } from "@/components/ui/skeleton";
