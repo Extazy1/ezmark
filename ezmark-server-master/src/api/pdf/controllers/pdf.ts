@@ -46,6 +46,58 @@ const joinUrl = (base: string, pathname: string) => {
   return `${normalizedBase}${normalizedPath}`;
 };
 
+const normalizeProtocol = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === "http" || normalized === "https") {
+    return normalized;
+  }
+
+  return undefined;
+};
+
+const shouldForceHttp = () =>
+  (process.env.PDF_FORCE_HTTP ?? "true").toLowerCase() !== "false";
+
+const resolveRestPrefix = () => {
+  const configuredPrefix = strapi?.config?.get?.("api.rest.prefix");
+
+  if (typeof configuredPrefix === "string" && configuredPrefix.trim()) {
+    return configuredPrefix.startsWith("/")
+      ? configuredPrefix.trim()
+      : `/${configuredPrefix.trim()}`;
+  }
+
+  return "/api";
+};
+
+const stripRestPrefix = (value: string | undefined) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const restPrefix = resolveRestPrefix();
+
+  if (!restPrefix) {
+    return value;
+  }
+
+  if (value === restPrefix) {
+    return "";
+  }
+
+  if (value.endsWith(restPrefix)) {
+    const trimmed = value.slice(0, value.length - restPrefix.length);
+    return trimmed;
+  }
+
+  return value;
+};
+
 const resolvePublicBaseUrl = (ctx: any): string | undefined => {
   const envCandidate = [
     process.env.PDF_PUBLIC_URL,
@@ -63,11 +115,27 @@ const resolvePublicBaseUrl = (ctx: any): string | undefined => {
     return trimTrailingSlashes(envCandidate);
   }
 
-  const forwardedProto = firstHeaderValue(ctx.get?.("x-forwarded-proto"));
+  const forwardedProto = normalizeProtocol(ctx.get?.("x-forwarded-proto"));
   const forwardedHost = firstHeaderValue(ctx.get?.("x-forwarded-host"));
-  const forwardedPrefix = normalizePrefix(ctx.get?.("x-forwarded-prefix"));
+  const forwardedPrefix = stripRestPrefix(
+    normalizePrefix(ctx.get?.("x-forwarded-prefix"))
+  );
 
-  const proto = forwardedProto || ctx.protocol;
+  const enforcedProtocol = normalizeProtocol(
+    process.env.PDF_PUBLIC_PROTOCOL
+  );
+  const shouldPreferHttp = shouldForceHttp();
+
+  let proto =
+    enforcedProtocol ||
+    forwardedProto ||
+    normalizeProtocol(ctx.protocol) ||
+    undefined;
+
+  if (!proto || (proto === "https" && shouldPreferHttp)) {
+    proto = "http";
+  }
+
   const host = forwardedHost || ctx.host;
 
   if (host) {

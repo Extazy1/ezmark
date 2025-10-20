@@ -60,9 +60,19 @@ export function EditorNavbar({ exam, isSaved = true, onSave, onExportPDF }: Edit
     }
 
     const handlePreviewPDF = () => {
-        if (exportedPdfUrl) {
-            window.open(exportedPdfUrl, '_blank');
+        if (!exportedPdfUrl) {
+            return;
         }
+
+        const anchor = document.createElement("a");
+        anchor.href = exportedPdfUrl;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.download = "";
+
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
     }
 
     const handleDialogChange = (open: boolean) => {

@@ -54,6 +54,28 @@ export async function updateExam(documentId: string, examData: ExamResponse) {
     return response.data;
 }
 
+const shouldForceHttp = () =>
+    (process.env.NEXT_PUBLIC_PDF_FORCE_HTTP ?? "true").toLowerCase() !== "false";
+
+const ensureAbsolutePdfUrl = (rawUrl: string) => {
+    if (typeof window === "undefined") {
+        return rawUrl;
+    }
+
+    try {
+        const resolved = new URL(rawUrl, window.location.origin);
+
+        if (shouldForceHttp()) {
+            resolved.protocol = "http:";
+        }
+
+        return resolved.toString();
+    } catch (error) {
+        console.warn("[pdf] failed to normalise url", error);
+        return rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`;
+    }
+};
+
 export async function getExportedPDFUrl(documentId: string) {
     const response = await axiosInstance.get<PDFReponse>(`/pdfs/${documentId}`);
     const payload = response.data as PDFReponse & {
@@ -66,7 +88,7 @@ export async function getExportedPDFUrl(documentId: string) {
         throw new Error(message);
     }
 
-    return payload.data.url;
+    return ensureAbsolutePdfUrl(payload.data.url);
 }
 
 /**
