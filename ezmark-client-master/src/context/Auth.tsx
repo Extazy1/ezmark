@@ -14,30 +14,37 @@ type StoredUser = {
   documentId: string;
 };
 
-const STORAGE_KEYS: StoredUser = {
+const STORAGE_KEYS: StoredUser & { jwt: string } = {
   userName: "userName",
   email: "email",
   id: "id",
   documentId: "documentId",
+  jwt: "jwt",
 };
 
+const isBrowser = () => typeof window !== "undefined";
+
 const writeStorage = (key: string, value: string) => {
-  if (!key) {
+  if (!key || !isBrowser()) {
     return;
   }
 
   if (value) {
-    localStorage.setItem(key, value);
+    window.localStorage.setItem(key, value);
   } else {
-    localStorage.removeItem(key);
+    window.localStorage.removeItem(key);
   }
 };
 
 const readStoredUser = (): StoredUser | null => {
-  const storedUserName = localStorage.getItem(STORAGE_KEYS.userName);
-  const storedEmail = localStorage.getItem(STORAGE_KEYS.email);
-  const storedId = localStorage.getItem(STORAGE_KEYS.id);
-  const storedDocumentId = localStorage.getItem(STORAGE_KEYS.documentId);
+  if (!isBrowser()) {
+    return null;
+  }
+
+  const storedUserName = window.localStorage.getItem(STORAGE_KEYS.userName);
+  const storedEmail = window.localStorage.getItem(STORAGE_KEYS.email);
+  const storedId = window.localStorage.getItem(STORAGE_KEYS.id);
+  const storedDocumentId = window.localStorage.getItem(STORAGE_KEYS.documentId);
 
   if (storedUserName && storedEmail && storedId && storedDocumentId) {
     return {
@@ -49,6 +56,14 @@ const readStoredUser = (): StoredUser | null => {
   }
 
   return null;
+};
+
+const readStoredJwt = () => {
+  if (!isBrowser()) {
+    return null;
+  }
+
+  return window.localStorage.getItem(STORAGE_KEYS.jwt);
 };
 
 export const AuthContext = createContext<AuthContextObject>({
@@ -79,24 +94,34 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const router = useRouter();
 
   const clearStoredSession = useCallback(() => {
-    Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
+    if (!isBrowser()) {
+      return;
+    }
+
+    Object.values(STORAGE_KEYS).forEach((key) => {
+      window.localStorage.removeItem(key);
+    });
   }, []);
 
   const applyUser = useCallback(
     ({ userName, email, id, documentId }: StoredUser) => {
-      setUserName(userName);
-      setEmail(email);
-      setId(id);
-      setDocumentId(documentId);
+      const safeUserName = userName && userName !== "undefined" ? userName : "";
+      const safeEmail = email && email !== "undefined" ? email : "";
+      const safeId = id && id !== "undefined" ? id : "";
+      const safeDocumentId =
+        documentId && documentId !== "undefined" ? documentId : "";
 
-      writeStorage(STORAGE_KEYS.userName, userName);
-      writeStorage(STORAGE_KEYS.email, email);
-      writeStorage(STORAGE_KEYS.id, id);
-      writeStorage(STORAGE_KEYS.documentId, documentId);
+      setUserName(safeUserName);
+      setEmail(safeEmail);
+      setId(safeId);
+      setDocumentId(safeDocumentId);
 
-      const hasCompleteProfile = Boolean(
-        userName && email && id && documentId,
-      );
+      writeStorage(STORAGE_KEYS.userName, safeUserName);
+      writeStorage(STORAGE_KEYS.email, safeEmail);
+      writeStorage(STORAGE_KEYS.id, safeId);
+      writeStorage(STORAGE_KEYS.documentId, safeDocumentId);
+
+      const hasCompleteProfile = Boolean(safeUserName && safeEmail && safeId);
 
       setAuthenticated(hasCompleteProfile);
     },
@@ -121,14 +146,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const hydrateSession = useCallback(async () => {
     const cookieJwt = Cookies.get("jwt");
+    const storedJwt = readStoredJwt();
+    const activeJwt = cookieJwt ?? storedJwt ?? "";
 
-    if (!cookieJwt) {
+    if (!activeJwt) {
       clearSession();
       setIsLoading(false);
       return;
     }
 
-    setJwt(cookieJwt);
+    setJwt(activeJwt);
+    writeStorage(STORAGE_KEYS.jwt, activeJwt);
+
+    if (!cookieJwt && activeJwt) {
+      Cookies.set("jwt", activeJwt);
+    }
 
     const storedUser = readStoredUser();
     if (storedUser) {

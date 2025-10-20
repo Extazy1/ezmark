@@ -21,7 +21,16 @@ axiosInstance.interceptors.request.use(
         if (config.url?.includes("/auth")) {
             return config;
         }
-        const token = Cookies.get("jwt");
+        let token = Cookies.get("jwt");
+
+        if (!token && typeof window !== "undefined") {
+            token = window.localStorage.getItem("jwt") ?? undefined;
+
+            if (token) {
+                Cookies.set("jwt", token);
+            }
+        }
+
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         }
@@ -53,6 +62,9 @@ axiosInstance.interceptors.response.use(
          */
         if (error.response?.status === 401) {
             Cookies.remove("jwt");
+            if (typeof window !== "undefined") {
+                window.localStorage.removeItem("jwt");
+            }
             window.location.href = "/auth/login";
             toast({
                 variant: "destructive",

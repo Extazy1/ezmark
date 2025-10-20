@@ -25,17 +25,43 @@ export default function LoginPage() {
   const handleSuccess = (responseData: LoginResponse) => {
     Cookies.set("jwt", responseData.jwt);
 
-    setJwt(responseData.jwt);
-    setUserName(responseData.user.username);
-    setEmail(responseData.user.email);
-    setId(responseData.user.id.toString());
-    setDocumentId(responseData.user.documentId);
-    setAuthenticated(true);
+    const safeUserName = responseData.user.username ?? "";
+    const safeEmail = responseData.user.email ?? "";
+    const safeId = responseData.user.id?.toString?.() ?? "";
+    const safeDocumentId = responseData.user.documentId ?? "";
 
-    localStorage.setItem("userName", responseData.user.username);
-    localStorage.setItem("email", responseData.user.email);
-    localStorage.setItem("id", responseData.user.id.toString());
-    localStorage.setItem("documentId", responseData.user.documentId);
+    setJwt(responseData.jwt);
+    setUserName(safeUserName);
+    setEmail(safeEmail);
+    setId(safeId);
+    setDocumentId(safeDocumentId);
+    setAuthenticated(Boolean(responseData.jwt));
+
+    if (safeUserName) {
+      localStorage.setItem("userName", safeUserName);
+    } else {
+      localStorage.removeItem("userName");
+    }
+
+    if (safeEmail) {
+      localStorage.setItem("email", safeEmail);
+    } else {
+      localStorage.removeItem("email");
+    }
+
+    if (safeId) {
+      localStorage.setItem("id", safeId);
+    } else {
+      localStorage.removeItem("id");
+    }
+
+    if (safeDocumentId) {
+      localStorage.setItem("documentId", safeDocumentId);
+    } else {
+      localStorage.removeItem("documentId");
+    }
+
+    localStorage.setItem("jwt", responseData.jwt);
 
     toast({
       title: "Login Successful",
