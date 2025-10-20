@@ -1,7 +1,5 @@
 // import type { Core } from '@strapi/strapi';
 
-import { warmupChrome } from "./utils/pdf-browser";
-
 export default {
   /**
    * An asynchronous register function that runs before
@@ -18,7 +16,5 @@ export default {
    * This gives you an opportunity to set up your data model,
    * run jobs, or perform some special logic.
    */
-  async bootstrap(/* { strapi }: { strapi: Core.Strapi } */) {
-    await warmupChrome();
-  },
+  async bootstrap(/* { strapi }: { strapi: Core.Strapi } */) {},
 };

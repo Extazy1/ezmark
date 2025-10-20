@@ -1,54 +1,9 @@
-import puppeteer from "puppeteer";
 import fs from "fs";
 import path from "path";
-import { resolvePdfLaunchOptions } from "../../../utils/pdf-browser";
+import type { ExamResponse } from "../../../../types/exam";
+import { generateExamPdf } from "../../../utils/pdf-generator";
 
 const trimTrailingSlashes = (value: string) => value.replace(/\/+$/, "");
-
-const resolveEnvBaseUrl = () => {
-  const candidates = [
-    process.env.PDF_RENDER_BASE_URL,
-    process.env.RENDER_BASE_URL,
-    process.env.FRONTEND_BASE_URL,
-    process.env.PUBLIC_FRONTEND_URL,
-    process.env.CLIENT_BASE_URL,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return trimTrailingSlashes(candidate.trim());
-    }
-  }
-
-  return undefined;
-};
-
-const resolveRenderBaseUrl = (ctx: any) => {
-  const fromEnv = resolveEnvBaseUrl();
-  if (fromEnv) {
-    return fromEnv;
-  }
-
-  const forwardedHost =
-    ctx.request?.header?.["x-forwarded-host"] ?? ctx.request?.header?.host;
-  const forwardedProto =
-    ctx.request?.header?.["x-forwarded-proto"]?.split(",")[0]?.trim();
-
-  if (forwardedHost) {
-    const protocol =
-      forwardedProto || (ctx.request?.secure ? "https" : "http") || "http";
-    return trimTrailingSlashes(`${protocol}://${forwardedHost}`);
-  }
-
-  return trimTrailingSlashes(
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:3000"
-      : "http://127.0.0.1"
-  );
-};
-
-const MARGIN_X = 0;
-const MARGIN_Y = 0;
 
 export default {
   // 获取PDF列表
@@ -62,14 +17,20 @@ export default {
       });
     }
 
-    const renderBaseUrl = resolveRenderBaseUrl(ctx);
-
     try {
       // 从参数中获取documentId
       const documentId = ctx.params.id;
-      const URL = `${renderBaseUrl}/render/${documentId}`;
-      // 从请求头获取JWT
-      const JWT = ctx.request.header.authorization;
+      const examData = await strapi
+        .documents("api::exam.exam")
+        .findOne({
+          documentId,
+        });
+
+      if (!examData) {
+        return ctx.notFound("Exam not found");
+      }
+
+      const exam = examData as unknown as ExamResponse;
 
       // 确保目录存在
       const pdfDir = path.resolve("./public/pdf");
@@ -77,37 +38,13 @@ export default {
         fs.mkdirSync(pdfDir, { recursive: true });
       }
 
-      // 使用puppeteer生成pdf
+      // 生成 PDF 文件
       const pdfFileName = `Exam-${documentId}.pdf`;
       const pdfPath = path.join(pdfDir, pdfFileName);
 
-      console.log(`开始生成pdf文件 ${documentId}，使用地址 ${URL}`);
-      let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
-
-      try {
-        const launchOptions = await resolvePdfLaunchOptions();
-        browser = await puppeteer.launch(launchOptions);
-        console.log(`浏览器启动成功 ${documentId}`);
-        const page = await browser.newPage();
-        console.log(`页面启动成功 ${documentId}`);
-
-        if (JWT) {
-          await page.setExtraHTTPHeaders({
-            Authorization: JWT,
-          });
-        }
-
-        console.log(`开始进入网页 ${URL}`);
-        await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });
-        console.log(`进入网页成功 ${documentId}`);
-        await page.pdf({ path: pdfPath, format: "A4" });
-        console.log(`pdf生成成功 ${documentId}`);
-      } finally {
-        if (browser) {
-          await browser.close();
-          console.log(`浏览器关闭 ${documentId}`);
-        }
-      }
+      console.log(`开始生成pdf文件 ${documentId}`);
+      await generateExamPdf(exam, pdfPath);
+      console.log(`pdf生成成功 ${documentId}`);
 
       // 检查文件是否生成成功
       if (!fs.existsSync(pdfPath)) {
