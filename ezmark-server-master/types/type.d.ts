@@ -46,6 +46,7 @@ export interface AuthContextObject {
     jwt: string;
     id: string;
     documentId: string;
+    isLoading: boolean;
     setAuthenticated: (authenticated: boolean) => void;
     setJwt: (jwt: string) => void;
     setUserName: (userName: string) => void;
