@@ -39,6 +39,10 @@ const nextConfig: NextConfig = {
         source: "/strapi/uploads/:path*",
         destination: `${INTERNAL_STRAPI_ORIGIN}/uploads/:path*`,
       },
+      {
+        source: "/strapi/pdf/:path*",
+        destination: `${INTERNAL_STRAPI_ORIGIN}/pdf/:path*`,
+      },
     ];
   },
 };
