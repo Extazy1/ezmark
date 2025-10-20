@@ -1,6 +1,14 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type SetStateAction,
+} from "react";
 import Cookies from "js-cookie";
 import { useRouter } from "next/navigation";
 
@@ -23,6 +31,18 @@ const STORAGE_KEYS: StoredUser & { jwt: string } = {
 };
 
 const isBrowser = () => typeof window !== "undefined";
+
+const shouldLogAuth =
+  process.env.NEXT_PUBLIC_AUTH_DEBUG === "true" || process.env.NODE_ENV !== "production";
+
+const logAuth = (...message: unknown[]) => {
+  if (!shouldLogAuth) {
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.info("[auth]", new Date().toISOString(), ...message);
+};
 
 const writeStorage = (key: string, value: string) => {
   if (!key || !isBrowser()) {
@@ -66,22 +86,7 @@ const readStoredJwt = () => {
   return window.localStorage.getItem(STORAGE_KEYS.jwt);
 };
 
-export const AuthContext = createContext<AuthContextObject>({
-  userName: "",
-  email: "",
-  id: "",
-  jwt: "",
-  authenticated: false,
-  isLoading: true,
-  setUserName: () => {},
-  setEmail: () => {},
-  setId: () => {},
-  setJwt: () => {},
-  setAuthenticated: () => {},
-  logout: () => Promise.resolve(),
-  documentId: "",
-  setDocumentId: () => {},
-});
+export const AuthContext = createContext<AuthContextObject>({} as AuthContextObject);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [userName, setUserName] = useState("");
@@ -89,9 +94,33 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [id, setId] = useState("");
   const [documentId, setDocumentId] = useState("");
   const [jwt, setJwt] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
+  const [authenticated, setAuthenticatedState] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+
+  const updateAuthenticated = useCallback(
+    (value: SetStateAction<boolean>, reason: string) => {
+      setAuthenticatedState((previous) => {
+        const nextValue = typeof value === "function" ? value(previous) : value;
+
+        if (previous === nextValue) {
+          logAuth(`auth unchanged (${reason})`, { value: nextValue });
+          return previous;
+        }
+
+        logAuth(`auth updated (${reason})`, { from: previous, to: nextValue });
+        return nextValue;
+      });
+    },
+    [],
+  );
+
+  const setAuthenticated = useCallback<AuthContextObject["setAuthenticated"]>(
+    (value) => {
+      updateAuthenticated(value, "context-setter");
+    },
+    [updateAuthenticated],
+  );
 
   const clearStoredSession = useCallback(() => {
     if (!isBrowser()) {
@@ -104,7 +133,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   const applyUser = useCallback(
-    ({ userName, email, id, documentId }: StoredUser) => {
+    ({ userName, email, id, documentId }: StoredUser, source: string) => {
       const safeUserName = userName && userName !== "undefined" ? userName : "";
       const safeEmail = email && email !== "undefined" ? email : "";
       const safeId = id && id !== "undefined" ? id : "";
@@ -123,21 +152,34 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       const hasCompleteProfile = Boolean(safeUserName && safeEmail && safeId);
 
-      setAuthenticated(hasCompleteProfile);
+      updateAuthenticated(
+        (previous) => (hasCompleteProfile ? true : previous),
+        `applyUser:${source}`,
+      );
+
+      logAuth("applied user profile", {
+        source,
+        hasCompleteProfile,
+        safeUserName,
+        safeEmail,
+        safeId,
+        safeDocumentId,
+      });
     },
-    [],
+    [updateAuthenticated],
   );
 
   const clearSession = useCallback(() => {
     Cookies.remove("jwt");
     clearStoredSession();
-    setAuthenticated(false);
+    updateAuthenticated(false, "clearSession");
     setUserName("");
     setEmail("");
     setId("");
     setDocumentId("");
     setJwt("");
-  }, [clearStoredSession]);
+    logAuth("session cleared");
+  }, [clearStoredSession, updateAuthenticated]);
 
   const logout = useCallback(async () => {
     clearSession();
@@ -149,9 +191,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const storedJwt = readStoredJwt();
     const activeJwt = cookieJwt ?? storedJwt ?? "";
 
+    logAuth("hydrateSession:start", {
+      hasCookieJwt: Boolean(cookieJwt),
+      hasStoredJwt: Boolean(storedJwt),
+    });
+
     if (!activeJwt) {
       clearSession();
       setIsLoading(false);
+      logAuth("hydrateSession:missing-jwt");
       return;
     }
 
@@ -160,11 +208,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     if (!cookieJwt && activeJwt) {
       Cookies.set("jwt", activeJwt);
+      logAuth("hydrateSession:set-cookie-from-storage");
     }
+
+    updateAuthenticated(true, "hydrateSession:jwt-present");
 
     const storedUser = readStoredUser();
     if (storedUser) {
-      applyUser(storedUser);
+      applyUser(storedUser, "localStorage");
+    } else {
+      logAuth("hydrateSession:no-stored-user");
     }
 
     try {
@@ -196,14 +249,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             ? String(profile.id)
             : profile.id ?? storedUser?.id ?? "",
         documentId: profile.documentId ?? storedUser?.documentId ?? "",
-      });
+      }, "remote");
+      logAuth("hydrateSession:profile-loaded");
     } catch (error) {
+      logAuth("hydrateSession:error", error);
       clearSession();
       router.replace("/auth/login");
     } finally {
       setIsLoading(false);
+      logAuth("hydrateSession:complete");
     }
-  }, [applyUser, clearSession, router]);
+  }, [applyUser, clearSession, router, updateAuthenticated]);
 
   useEffect(() => {
     hydrateSession();
@@ -222,8 +278,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       const storedUser = readStoredUser();
 
       if (storedUser) {
-        applyUser(storedUser);
+        logAuth("storage-event:apply-user", { key: event.key });
+        applyUser(storedUser, "storage-event");
       } else {
+        logAuth("storage-event:clear-session", { key: event.key });
         clearSession();
       }
     };
@@ -235,28 +293,37 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     };
   }, [applyUser, clearSession]);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        userName,
-        email,
-        id,
-        jwt,
-        authenticated,
-        isLoading,
-        setUserName,
-        setEmail,
-        setId,
-        setJwt,
-        setAuthenticated,
-        logout,
-        documentId,
-        setDocumentId,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const contextValue = useMemo(
+    () => ({
+      userName,
+      email,
+      id,
+      jwt,
+      authenticated,
+      isLoading,
+      setUserName,
+      setEmail,
+      setId,
+      setJwt,
+      setAuthenticated,
+      logout,
+      documentId,
+      setDocumentId,
+    }),
+    [
+      userName,
+      email,
+      id,
+      jwt,
+      authenticated,
+      isLoading,
+      setAuthenticated,
+      logout,
+      documentId,
+    ],
   );
+
+  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
