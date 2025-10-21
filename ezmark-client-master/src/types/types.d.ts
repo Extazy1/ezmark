@@ -1,3 +1,5 @@
+import type { Dispatch, SetStateAction } from "react";
+
 export interface LoginResponse {
     jwt: string;
     user: {
@@ -46,12 +48,13 @@ export interface AuthContextObject {
     jwt: string;
     id: string;
     documentId: string;
-    setAuthenticated: (authenticated: boolean) => void;
-    setJwt: (jwt: string) => void;
-    setUserName: (userName: string) => void;
-    setEmail: (email: string) => void;
-    setDocumentId: (documentId: string) => void;
-    setId: (id: string) => void;
+    isLoading: boolean;
+    setAuthenticated: Dispatch<SetStateAction<boolean>>;
+    setJwt: Dispatch<SetStateAction<string>>;
+    setUserName: Dispatch<SetStateAction<string>>;
+    setEmail: Dispatch<SetStateAction<string>>;
+    setDocumentId: Dispatch<SetStateAction<string>>;
+    setId: Dispatch<SetStateAction<string>>;
     logout: () => Promise<void>;
 }
 

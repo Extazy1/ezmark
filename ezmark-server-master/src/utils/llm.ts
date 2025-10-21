@@ -1,22 +1,46 @@
+import "dotenv/config";
 import OpenAI from "openai";
 import { HEADER_PROMPT, MCQ_PROMPT, SUBJECTIVE_PROMPT } from "./prompt";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { Header, HeaderSchema, MCQResult, MCQSchema, SubjectiveInput, SubjectiveResult, SubjectiveSchema } from "./schema";
 import { imageToBase64 } from "./tools";
 
-const gpt = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseURL: process.env.OPENAI_BASE_URL,
-});
+function getRequiredEnvVar(key: string): string {
+    const value = process.env[key]?.trim();
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${key}`);
+    }
+    return value;
+}
 
-const qwen = new OpenAI({
-    apiKey: process.env.QWEN_API_KEY,
-    baseURL: process.env.QWEN_BASE_URL,
-});
+const optionalEnv = (key: string): string | undefined => process.env[key]?.trim() || undefined;
+
+let gptClient: OpenAI | null = null;
+let qwenClient: OpenAI | null = null;
+
+function getGptClient(): OpenAI {
+    if (!gptClient) {
+        gptClient = new OpenAI({
+            apiKey: getRequiredEnvVar("OPENAI_API_KEY"),
+            baseURL: optionalEnv("OPENAI_BASE_URL"),
+        });
+    }
+    return gptClient;
+}
+
+function getQwenClient(): OpenAI {
+    if (!qwenClient) {
+        qwenClient = new OpenAI({
+            apiKey: getRequiredEnvVar("QWEN_API_KEY"),
+            baseURL: optionalEnv("QWEN_BASE_URL"),
+        });
+    }
+    return qwenClient;
+}
 
 export async function recognizeHeader(imagePath: string): Promise<Header> {
     console.log('MODEL NAME', process.env.MATCHING_MODEL_NAME);
-    const response = await gpt.chat.completions.create({
+    const response = await getGptClient().chat.completions.create({
         model: process.env.MATCHING_MODEL_NAME,
         messages: [{
             role: "user",
@@ -48,7 +72,7 @@ export async function recognizeHeader(imagePath: string): Promise<Header> {
 
 export async function recognizeMCQ(imagePath: string): Promise<MCQResult> {
     console.log('MODEL NAME', process.env.OBJECTIVE_MODEL_NAME);
-    const response = await qwen.chat.completions.create({
+    const response = await getQwenClient().chat.completions.create({
         model: process.env.OBJECTIVE_MODEL_NAME,
         messages: [{
             role: "user",
@@ -82,7 +106,7 @@ export async function askSubjective(question: SubjectiveInput): Promise<Subjecti
     console.log('LLM SUBJECTIVE START');
     console.log('MODEL NAME', process.env.SUBJECTIVE_MODEL_NAME);
     console.log(question);
-    const response = await gpt.chat.completions.create({
+    const response = await getGptClient().chat.completions.create({
         model: process.env.SUBJECTIVE_MODEL_NAME,
         messages: [{
             role: "user",

@@ -1,9 +1,157 @@
-import puppeteer from "puppeteer";
 import fs from "fs";
 import path from "path";
+import type { ExamResponse } from "../../../../types/exam";
+import { generateExamPdf } from "../../../utils/pdf-generator";
 
-const MARGIN_X = 0;
-const MARGIN_Y = 0;
+const trimTrailingSlashes = (value: string) => value.replace(/\/+$/, "");
+
+const firstHeaderValue = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  return value
+    .split(",")
+    .map((segment) => segment.trim())
+    .find((segment) => segment.length > 0);
+};
+
+const normalizePrefix = (value?: string) => {
+  const first = firstHeaderValue(value);
+
+  if (!first) {
+    return "";
+  }
+
+  const sanitized = first
+    .replace(/\s+/g, "")
+    .replace(/\/+$/, "")
+    .replace(/^\/+/, "");
+
+  if (!sanitized) {
+    return "";
+  }
+
+  return `/${sanitized}`;
+};
+
+const joinUrl = (base: string, pathname: string) => {
+  const normalizedBase = trimTrailingSlashes(base);
+  const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+
+  if (!normalizedBase) {
+    return normalizedPath;
+  }
+
+  return `${normalizedBase}${normalizedPath}`;
+};
+
+const normalizeProtocol = (value?: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === "http" || normalized === "https") {
+    return normalized;
+  }
+
+  return undefined;
+};
+
+const shouldForceHttp = () =>
+  (process.env.PDF_FORCE_HTTP ?? "true").toLowerCase() !== "false";
+
+const resolveRestPrefix = () => {
+  const configuredPrefix = strapi?.config?.get?.("api.rest.prefix");
+
+  if (typeof configuredPrefix === "string" && configuredPrefix.trim()) {
+    return configuredPrefix.startsWith("/")
+      ? configuredPrefix.trim()
+      : `/${configuredPrefix.trim()}`;
+  }
+
+  return "/api";
+};
+
+const stripRestPrefix = (value: string | undefined) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const restPrefix = resolveRestPrefix();
+
+  if (!restPrefix) {
+    return value;
+  }
+
+  if (value === restPrefix) {
+    return "";
+  }
+
+  if (value.endsWith(restPrefix)) {
+    const trimmed = value.slice(0, value.length - restPrefix.length);
+    return trimmed;
+  }
+
+  return value;
+};
+
+const resolvePublicBaseUrl = (ctx: any): string | undefined => {
+  const envCandidate = [
+    process.env.PDF_PUBLIC_URL,
+    process.env.STRAPI_PDF_PUBLIC_URL,
+    process.env.PUBLIC_URL,
+    process.env.STRAPI_PUBLIC_URL,
+    strapi?.config?.get?.("server.url"),
+  ]
+    .map((candidate) =>
+      typeof candidate === "string" ? candidate.trim() : undefined
+    )
+    .find((candidate) => candidate);
+
+  if (envCandidate) {
+    return trimTrailingSlashes(envCandidate);
+  }
+
+  const forwardedProto = normalizeProtocol(ctx.get?.("x-forwarded-proto"));
+  const forwardedHost = firstHeaderValue(ctx.get?.("x-forwarded-host"));
+  const forwardedPrefix = stripRestPrefix(
+    normalizePrefix(ctx.get?.("x-forwarded-prefix"))
+  );
+
+  const enforcedProtocol = normalizeProtocol(
+    process.env.PDF_PUBLIC_PROTOCOL
+  );
+  const shouldPreferHttp = shouldForceHttp();
+
+  let proto =
+    enforcedProtocol ||
+    forwardedProto ||
+    normalizeProtocol(ctx.protocol) ||
+    undefined;
+
+  if (!proto || (proto === "https" && shouldPreferHttp)) {
+    proto = "http";
+  }
+
+  const host = forwardedHost || ctx.host;
+
+  if (host) {
+    const origin = trimTrailingSlashes(`${proto}://${host}`);
+    if (forwardedPrefix) {
+      return trimTrailingSlashes(`${origin}${forwardedPrefix}`);
+    }
+    return origin;
+  }
+
+  if (forwardedPrefix) {
+    return trimTrailingSlashes(forwardedPrefix);
+  }
+
+  return undefined;
+};
 
 export default {
   // 获取PDF列表
@@ -20,12 +168,17 @@ export default {
     try {
       // 从参数中获取documentId
       const documentId = ctx.params.id;
-      const URL =
-        process.env.NODE_ENV === "development"
-          ? `http://localhost:3000/render/${documentId}`
-          : `https://47.82.94.221/render/${documentId}`;
-      // 从请求头获取JWT
-      const JWT = ctx.request.header.authorization;
+      const examData = await strapi
+        .documents("api::exam.exam")
+        .findOne({
+          documentId,
+        });
+
+      if (!examData) {
+        return ctx.notFound("Exam not found");
+      }
+
+      const exam = examData as unknown as ExamResponse;
 
       // 确保目录存在
       const pdfDir = path.resolve("./public/pdf");
@@ -33,48 +186,37 @@ export default {
         fs.mkdirSync(pdfDir, { recursive: true });
       }
 
-      // 使用puppeteer生成pdf
+      // 生成 PDF 文件
       const pdfFileName = `Exam-${documentId}.pdf`;
       const pdfPath = path.join(pdfDir, pdfFileName);
 
       console.log(`开始生成pdf文件 ${documentId}`);
-      const browser = await puppeteer.launch(
-        process.env.NODE_ENV === "development"
-          ? {}
-          : {
-              executablePath: "/usr/bin/chromium-browser", // 生产环境需要指定浏览器路径
-            }
-      );
-      console.log(`浏览器启动成功 ${documentId}`);
-      const page = await browser.newPage();
-      console.log(`页面启动成功 ${documentId}`);
-      await page.setExtraHTTPHeaders({
-        Authorization: JWT,
-      });
-      console.log(`开始进入网页 ${URL}`);
-      await page.goto(URL, { waitUntil: "networkidle0" });
-      console.log(`进入网页成功 ${documentId}`);
-      await page.pdf({ path: pdfPath, format: "A4" });
+      await generateExamPdf(exam, pdfPath);
       console.log(`pdf生成成功 ${documentId}`);
-      await browser.close();
-      console.log(`浏览器关闭 ${documentId}`);
 
       // 检查文件是否生成成功
       if (!fs.existsSync(pdfPath)) {
         return ctx.badRequest("PDF generation failed");
       }
 
-      // 返回文件URL（相对路径，由Strapi的静态文件中间件处理）
+      const pdfRelativePath = `/pdf/${pdfFileName}`;
+      const publicBaseUrl = resolvePublicBaseUrl(ctx);
+      const forwardedPrefix = normalizePrefix(ctx.get?.("x-forwarded-prefix"));
+
+      const pdfUrl = publicBaseUrl
+        ? joinUrl(publicBaseUrl, pdfRelativePath)
+        : forwardedPrefix
+        ? joinUrl(forwardedPrefix, pdfRelativePath)
+        : pdfRelativePath;
+
+      // 返回文件URL（相对或绝对路径，由客户端负责处理前缀）
       return ctx.send({
         data: {
-          url: `${
-            process.env.NODE_ENV === "development"
-              ? "http://localhost:1337"
-              : "https://47.82.94.221/strapi"
-          }/pdf/${pdfFileName}`,
+          url: pdfUrl,
         },
       });
     } catch (error) {
+      strapi.log.error("PDF generation failed", error);
       return ctx.badRequest("PDF generation failed");
     }
   },
