@@ -62,7 +62,15 @@ export async function startMatching(documentId: string) {
     // 5. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
     // 5.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
     const studentCount = classData.students.length;
-    const pagesPerExam = exam.examData.components[exam.examData.components.length - 1].position.pageIndex + 1;
+    const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
+    const positionedPageIndices = components
+        .map((component) => component.position?.pageIndex)
+        .filter((pageIndex): pageIndex is number => typeof pageIndex === 'number' && Number.isFinite(pageIndex));
+    if (positionedPageIndices.length === 0) {
+        strapi.log.error(`startMatching(${documentId}): unable to determine exam page count because no component positions were found.`);
+        return;
+    }
+    const pagesPerExam = Math.max(...positionedPageIndices) + 1;
     const totalPages = studentCount * pagesPerExam;
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
@@ -83,7 +91,12 @@ export async function startMatching(documentId: string) {
 
     // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
     const papers: Paper[] = [] // 保存所有试卷的id, startPage, endPage
-    const headerComponentId = exam.examData.components.find(com => com.type === 'default-header').id;
+    const headerComponent = components.find(com => com.type === 'default-header');
+    if (!headerComponent) {
+        strapi.log.error(`startMatching(${documentId}): unable to locate header component in exam definition.`);
+        return;
+    }
+    const headerComponentId = headerComponent.id;
     const headerImagePaths = []
     const nanoid = await getNanoid();
     for (let i = 0; i < studentCount; i++) {
