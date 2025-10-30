@@ -251,22 +251,24 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             },
         ];
 
-        const qwenContent = [
-            {
-                type: "input_text",
-                text: HEADER_PROMPT,
-            },
-            {
-                type: "input_image",
-                image_url: `data:image/png;base64,${base64Image}`,
-            },
-        ];
-
         const request: ChatCompletionCreateParamsNonStreaming = {
             model,
             messages: [] as unknown as ChatCompletionCreateParamsNonStreaming["messages"],
             stream: false,
         };
+
+        const qwenContent = [
+            {
+                type: "text",
+                text: HEADER_PROMPT,
+            },
+            {
+                type: "image_url",
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}`,
+                },
+            },
+        ] as ChatCompletionCreateParamsNonStreaming["messages"][number]["content"];
 
         const message = provider === "openai"
             ? { role: "user", content: openaiContent }

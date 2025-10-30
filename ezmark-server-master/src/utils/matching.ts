@@ -451,14 +451,47 @@ export async function startMatching(documentId: string) {
         }
     };
 
-        schedule.result = {
-            ...updatedResult,
-            error: null,
+    schedule.result = {
+        ...updatedResult,
+        error: null,
+    };
+
+    const requiredMatches = Math.min(2, studentCount);
+    if (matchedPairs.length < requiredMatches) {
+        const failureSummary = {
+            matchedCount: matchedPairs.length,
+            requiredMatches,
+            studentCount,
+            headerFailures: headerFailures.map((failure) => ({
+                index: failure.index,
+                path: failure.path,
+                message: failure.message,
+                details: failure.details,
+            })),
+            unmatchedStudentIds: unmatchedStudents.map((student) => student.studentId),
+            unmatchedPaperIds: unmatchedPapers.map((paper) => paper.paperId),
         };
 
-        await persistScheduleResult(schedule);
+        const failureMessage = `Only ${matchedPairs.length} of ${studentCount} papers matched; at least ${requiredMatches} successful matches are required to continue.`;
 
-        logMatchStep(documentId, "matching completed successfully");
+        await markMatchError(
+            schedule,
+            documentId,
+            failureMessage,
+            new Error(JSON.stringify(failureSummary, null, 2)),
+        );
+
+        logMatchStep(
+            documentId,
+            "matching aborted because the minimum successful match threshold was not met",
+        );
+
+        return;
+    }
+
+    await persistScheduleResult(schedule);
+
+    logMatchStep(documentId, "matching completed successfully");
 
         // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
     } catch (error) {
