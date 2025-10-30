@@ -162,6 +162,7 @@ export interface Paper {
     studentId: string; // 学生id
     studentDocumentId: string; // 学生documentId
     headerImgUrl: string; // 试卷头图片url
+    questionImageMap: Record<string, string>;
 }
 
 export interface StudentPaper {

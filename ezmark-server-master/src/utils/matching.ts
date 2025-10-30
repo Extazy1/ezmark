@@ -1,6 +1,5 @@
 import path from "path";
 import fs from "fs";
-import { randomBytes } from "crypto";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
@@ -11,9 +10,9 @@ import { recognizeHeader, LLMRequestError } from "./llm";
 
 const PADDING = 10;
 
-const createPaperId = () => randomBytes(8).toString("hex");
-
 const MATCH_STAGE = "MATCH";
+
+const createPaperId = (index: number) => `student-${index + 1}`;
 
 const normaliseUploadsPath = (rawUrl: string) => {
     if (!rawUrl) {
@@ -42,6 +41,8 @@ const normaliseUploadsPath = (rawUrl: string) => {
 const logMatchStep = (documentId: string, message: string) => {
     strapi.log.info(`[matching:${documentId}] ${message}`);
 };
+
+const toPosixPath = (...segments: string[]) => path.posix.join(...segments);
 
 const isoTimestamp = () => new Date().toISOString();
 
@@ -197,91 +198,164 @@ export async function startMatching(documentId: string) {
 
     // 5.2 把PDF转换成图片
     // 创建public/pipeline/{scheduleDocumentId}/all文件夹,保存PDF的所有图片
-    const allImagesDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, 'all');
-    if (!fs.existsSync(allImagesDir)) {
-        fs.mkdirSync(allImagesDir, { recursive: true });
+    const pipelineDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId);
+    if (fs.existsSync(pipelineDir)) {
+        fs.rmSync(pipelineDir, { recursive: true, force: true });
     }
+    fs.mkdirSync(pipelineDir, { recursive: true });
+
     logMatchStep(documentId, "converting PDF into page images");
-    await pdf2png(pdfPath, allImagesDir);
+    await pdf2png(pdfPath, pipelineDir);
     logMatchStep(documentId, "PDF conversion complete");
 
-    // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
-    const papers: Paper[] = []; // 保存所有试卷的id, startPage, endPage
+    const pageImages = fs.readdirSync(pipelineDir)
+        .filter((file) => /^page-\d+\.png$/i.test(file))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    if (pageImages.length !== actualTotalPages) {
+        await markMatchError(schedule, documentId, `Expected ${actualTotalPages} page images but found ${pageImages.length}.`);
+        return;
+    }
+
+    const papers: Paper[] = [];
     const headerComponent = components.find(com => com.type === "default-header");
     if (!headerComponent) {
         await markMatchError(schedule, documentId, "Unable to locate header component in exam definition.");
         return;
     }
     const headerComponentId = headerComponent.id;
-    const headerImagePaths: string[] = [];
-    for (let i = 0; i < studentCount; i++) {
-        const paperId = createPaperId();
-        const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
-        if (!fs.existsSync(paperDir)) {
-            fs.mkdirSync(paperDir, { recursive: true });
-        }
-        // 计算页面范围
-        const startPage = i * pagesPerExam;
+    const headerTasks: { diskPath: string; paperIndex: number }[] = [];
+
+    for (let studentIndex = 0; studentIndex < studentCount; studentIndex++) {
+        const paperId = createPaperId(studentIndex);
+        const paperDir = path.join(pipelineDir, paperId);
+        fs.mkdirSync(paperDir, { recursive: true });
+
+        const startPage = studentIndex * pagesPerExam;
         const endPage = startPage + pagesPerExam;
-        // 根据页面范围，从allImagesDir中获取图片
-        const images = fs.readdirSync(allImagesDir);
-        const imagesInRange = images.slice(startPage, endPage);
-        // 将图片保存到paperDir中
-        imagesInRange.forEach((image, index) => {
-            fs.copyFileSync(path.join(allImagesDir, image), path.join(paperDir, `page-${index}.png`));
-        });
 
-        // 5.4 更新papers数组,追加一条
-        papers.push({ paperId, startPage, endPage, name: '', studentId: '', headerImgUrl: '', studentDocumentId: '' })
-        // 5.5 根据Exam的数据，切割题目 public/pipeline/{scheduleDocumentId}/{paperId}/questions
-        const questionsDir = path.join(paperDir, 'questions');
-        if (!fs.existsSync(questionsDir)) {
-            fs.mkdirSync(questionsDir, { recursive: true });
+        for (let pageOffset = 0; pageOffset < pagesPerExam; pageOffset++) {
+            const globalPageIndex = startPage + pageOffset;
+            const pageFileName = pageImages[globalPageIndex];
+            if (!pageFileName) {
+                await markMatchError(schedule, documentId, `Missing page image for index ${globalPageIndex}.`);
+                return;
+            }
+
+            const sourceImagePath = path.join(pipelineDir, pageFileName);
+            const targetImagePath = path.join(paperDir, `page-${pageOffset}.png`);
+            fs.copyFileSync(sourceImagePath, targetImagePath);
         }
 
-        // 循环处理每一页
-        for (let i = 0; i < pagesPerExam; i++) {
-            const imgPath = path.join(paperDir, `page-${i}.png`);
-            // 加载当前页图片
+        const questionsDir = path.join(paperDir, 'questions');
+        fs.mkdirSync(questionsDir, { recursive: true });
+
+        const questionImageMap: Record<string, string> = {};
+        let headerDiskPath: string | null = null;
+        let headerRelativePath: string | null = null;
+
+        for (let pageOffset = 0; pageOffset < pagesPerExam; pageOffset++) {
+            const imgPath = path.join(paperDir, `page-${pageOffset}.png`);
             const image = sharp(imgPath);
             const imageInfo = await image.metadata();
-            // 过滤出当前页面的组件
-            const pageComponents = exam.examData.components.filter(com => com.position?.pageIndex === i);
-            console.log(`page-${i} has ${pageComponents.length} components`)
-            // 循环处理每个组件
+
+            const pageComponents = components
+                .filter(com => com.position?.pageIndex === pageOffset)
+                .sort((a, b) => {
+                    const posA = a.position ?? { top: 0, left: 0 };
+                    const posB = b.position ?? { top: 0, left: 0 };
+                    if (posA.top !== posB.top) {
+                        return posA.top - posB.top;
+                    }
+                    return posA.left - posB.left;
+                });
+
             for (let compIndex = 0; compIndex < pageComponents.length; compIndex++) {
                 const comp = pageComponents[compIndex];
                 const rect = comp.position;
-                const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
-                // 将毫米转换为像素
-                const left = 0;
-                const top = Math.max(mmToPixels(rect.top, imageInfo) - PADDING, 0);
-                const width = imageInfo.width!;
-                const height = mmToPixels(rect.height, imageInfo) + PADDING * 2;
-                // 裁剪图片
-                await image.clone().extract({ left, top, width, height }).toFile(outputFilePath);
+
+                if (!rect || !imageInfo.width || !imageInfo.height) {
+                    continue;
+                }
+
+                const widthMm = Number(rect.width);
+                const heightMm = Number(rect.height);
+                if (!Number.isFinite(widthMm) || !Number.isFinite(heightMm) || widthMm <= 0 || heightMm <= 0) {
+                    continue;
+                }
+
+                const leftMm = Number(rect.left ?? 0);
+                const topMm = Number(rect.top ?? 0);
+
+                const left = Math.max(mmToPixels(leftMm, imageInfo, "x") - PADDING, 0);
+                const top = Math.max(mmToPixels(topMm, imageInfo, "y") - PADDING, 0);
+                const widthPx = mmToPixels(widthMm, imageInfo, "x") + PADDING * 2;
+                const heightPx = mmToPixels(heightMm, imageInfo, "y") + PADDING * 2;
+
+                const maxWidth = imageInfo.width ?? 0;
+                const maxHeight = imageInfo.height ?? 0;
+                const extractWidth = Math.min(widthPx, Math.max(maxWidth - left, 0));
+                const extractHeight = Math.min(heightPx, Math.max(maxHeight - top, 0));
+
+                if (extractWidth <= 0 || extractHeight <= 0) {
+                    continue;
+                }
+
+                const outputFileName = `page${pageOffset}_${compIndex}.png`;
+                const outputFilePath = path.join(questionsDir, outputFileName);
+
+                await image.clone().extract({
+                    left,
+                    top,
+                    width: extractWidth,
+                    height: extractHeight,
+                }).toFile(outputFilePath);
+
+                const relativePath = toPosixPath('pipeline', schedule.documentId, paperId, 'questions', outputFileName);
+                questionImageMap[comp.id] = relativePath;
+
+                if (comp.id === headerComponentId) {
+                    headerDiskPath = outputFilePath;
+                    headerRelativePath = relativePath;
+                }
             }
         }
 
-        // 把Header添加到数组中
-        headerImagePaths.push(path.join(questionsDir, `${headerComponentId}.png`))
+        if (!headerDiskPath || !headerRelativePath) {
+            await markMatchError(schedule, documentId, 'Unable to locate header image for one of the papers. Please ensure the exam definition contains a header component with valid positioning data.');
+            return;
+        }
+
+        const paperIndex = papers.length;
+        headerTasks.push({ diskPath: headerDiskPath, paperIndex });
+
+        papers.push({
+            paperId,
+            startPage,
+            endPage,
+            name: '',
+            studentId: '',
+            headerImgUrl: headerRelativePath,
+            studentDocumentId: '',
+            questionImageMap,
+        });
     }
 
     // 6. VLM识别姓名和学号
     // 6.1 识别所有header
     console.log(`Start recognizing header... for schedule ${schedule.documentId}`)
-    logMatchStep(documentId, `recognising ${headerImagePaths.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
+    logMatchStep(documentId, `recognising ${headerTasks.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
     const scheduleId = schedule.documentId;
-    const headerResults = await Promise.all(headerImagePaths.map(async (path, index) => {
+    const headerResults = await Promise.all(headerTasks.map(async ({ diskPath, paperIndex }, index) => {
         try {
-            const header = await recognizeHeader(path, {
+            const header = await recognizeHeader(diskPath, {
                 scheduleId,
                 headerIndex: index,
-                totalHeaders: headerImagePaths.length,
+                totalHeaders: headerTasks.length,
             });
-            return header;
+            return { header, paperIndex };
         } catch (error) {
-            strapi.log.error(`startMatching(${documentId}): header recognition failed for ${path}`, error instanceof Error ? error : undefined);
+            strapi.log.error(`startMatching(${documentId}): header recognition failed for ${diskPath}`, error instanceof Error ? error : undefined);
             throw error;
         }
     }));
@@ -290,10 +364,10 @@ export async function startMatching(documentId: string) {
     console.log(`End recognizing header... for schedule ${schedule.documentId}`)
 
     // 6.1 更新papers数组,追加name和studentId
-    papers.forEach((paper, index) => {
-        paper.name = headerResults[index].name;
-        paper.studentId = headerResults[index].studentId;
-        paper.headerImgUrl = path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+    headerResults.forEach(({ header, paperIndex }) => {
+        const paper = papers[paperIndex];
+        paper.name = header.name;
+        paper.studentId = header.studentId;
     });
 
     // 7. 和students和papers进行比对和关联
@@ -333,13 +407,13 @@ export async function startMatching(documentId: string) {
             matched: matchedPairs.map(pair => ({
                 studentId: pair.student.studentId,
                 paperId: pair.paper.paperId,
-                headerImgUrl: path.join('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
+                headerImgUrl: pair.paper.headerImgUrl,
             })),
             unmatched: {
                 studentIds: unmatchedStudents.map(student => student.studentId),
                 papers: unmatchedPapers.map(paper => ({
                     paperId: paper.paperId,
-                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+                    headerImgUrl: paper.headerImgUrl,
                 }))
             },
             done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
