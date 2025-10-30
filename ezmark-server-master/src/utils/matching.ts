@@ -23,7 +23,33 @@ async function getNanoid() {
 
 const MATCH_STAGE = "MATCH";
 
-const normaliseUploadsPath = (url: string) => url.replace(/^\/+/, "");
+const normaliseUploadsPath = (rawUrl: string) => {
+    if (!rawUrl) {
+        return "";
+    }
+
+    let url = rawUrl.trim();
+
+    if (!url) {
+        return "";
+    }
+
+    try {
+        const parsed = new URL(url);
+        url = parsed.pathname || "";
+    } catch (error) {
+        // If parsing fails we assume the URL is already relative
+    }
+
+    url = url.replace(/^\/+/, "");
+    url = url.replace(/^strapi\//, "");
+
+    return url;
+};
+
+const logMatchStep = (documentId: string, message: string) => {
+    strapi.log.info(`[matching:${documentId}] ${message}`);
+};
 
 const isoTimestamp = () => new Date().toISOString();
 
@@ -42,11 +68,17 @@ async function markMatchError(
     message: string,
     error?: unknown,
 ) {
+    const details = error instanceof Error
+        ? error.stack || error.message
+        : typeof error === "string"
+            ? error
+            : undefined;
+
     strapi.log.error(`startMatching(${documentId}): ${message}`, error instanceof Error ? error : undefined);
     schedule.result.error = {
         stage: MATCH_STAGE,
         message,
-        details: error instanceof Error ? error.message : typeof error === "string" ? error : undefined,
+        details,
         timestamp: isoTimestamp(),
     };
     await persistScheduleResult(schedule);
@@ -70,11 +102,15 @@ export async function startMatching(documentId: string) {
         schedule = scheduleData as unknown as ExamSchedule; // 强制将返回结果转换为ExamSchedule类型
         schedule.result = ensureScheduleResult(schedule.result);
 
+        logMatchStep(documentId, "loaded schedule payload");
+
         if (schedule.result.progress !== 'MATCH_START') {
             schedule.result.progress = 'MATCH_START';
         }
         schedule.result.error = null;
         await persistScheduleResult(schedule);
+
+        logMatchStep(documentId, "initialised result state");
 
         // 2. 拿到pdfId (从result属性中获取)
         const pdfUrl = schedule.result.pdfUrl?.trim(); // /uploads/exam_scan_732425fbd9.pdf
@@ -86,13 +122,18 @@ export async function startMatching(documentId: string) {
 
         // 3. 通过pdfId直接从文件夹中获取pdf文件
         const rootDir = process.cwd();
-        const pdfPath = path.join(rootDir, 'public', normaliseUploadsPath(pdfUrl));
+        const uploadsPath = normaliseUploadsPath(pdfUrl);
+        const pdfPath = path.join(rootDir, 'public', uploadsPath);
+
+        logMatchStep(documentId, `resolved PDF url "${pdfUrl}" to ${pdfPath}`);
 
         // 4. 检查pdf文件是否存在
         if (!fs.existsSync(pdfPath)) {
             await markMatchError(schedule, documentId, `PDF file not found at ${pdfPath}`);
             return;
         }
+
+    logMatchStep(documentId, "loading exam and class metadata");
 
     // 5. 获得Exam, Class, Teacher数据
     const examData = await strapi.documents('api::exam.exam').findOne({
@@ -132,13 +173,17 @@ export async function startMatching(documentId: string) {
             return;
         }
 
+    logMatchStep(documentId, `detected ${actualTotalPages} pages (${pagesPerExam} per exam for ${studentCount} students)`);
+
     // 5.2 把PDF转换成图片
     // 创建public/pipeline/{scheduleDocumentId}/all文件夹,保存PDF的所有图片
     const allImagesDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, 'all');
     if (!fs.existsSync(allImagesDir)) {
         fs.mkdirSync(allImagesDir, { recursive: true });
     }
+    logMatchStep(documentId, "converting PDF into page images");
     await pdf2png(pdfPath, allImagesDir);
+    logMatchStep(documentId, "PDF conversion complete");
 
     // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
     const papers: Paper[] = [] // 保存所有试卷的id, startPage, endPage
@@ -206,9 +251,15 @@ export async function startMatching(documentId: string) {
     // 6. VLM识别姓名和学号
     // 6.1 识别所有header
     console.log(`Start recognizing header... for schedule ${schedule.documentId}`)
+    logMatchStep(documentId, `recognising ${headerImagePaths.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
     const headerResults = await Promise.all(headerImagePaths.map(async (path) => {
-        const header = await recognizeHeader(path);
-        return header;
+        try {
+            const header = await recognizeHeader(path);
+            return header;
+        } catch (error) {
+            strapi.log.error(`startMatching(${documentId}): header recognition failed for ${path}`, error instanceof Error ? error : undefined);
+            throw error;
+        }
     }));
     console.log(headerResults)
     console.log(`End recognizing header... for schedule ${schedule.documentId}`)
@@ -246,9 +297,7 @@ export async function startMatching(documentId: string) {
     // 找出未匹配的学生
     const unmatchedStudents = students.filter(student => !matchedStudentIds.has(student.studentId));
     // 记录匹配和未匹配信息
-    console.log(`匹配成功: ${matchedPairs.length} 份试卷`);
-    console.log(`未匹配试卷: ${unmatchedPapers.length} 份`);
-    console.log(`未匹配学生: ${unmatchedStudents.length} 名`);
+    logMatchStep(documentId, `matched ${matchedPairs.length} papers, ${unmatchedPapers.length} unmatched papers, ${unmatchedStudents.length} unmatched students`);
 
     // 8. 更新Schedule的result和papers，添加匹配结果
     const updatedResult = {
@@ -278,6 +327,8 @@ export async function startMatching(documentId: string) {
         };
 
         await persistScheduleResult(schedule);
+
+        logMatchStep(documentId, "matching completed successfully");
 
         // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
     } catch (error) {

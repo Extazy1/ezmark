@@ -21,6 +21,7 @@ const loadingMessages = [
 export default function MatchStart({ updateSchedule, schedule }: MatchStartProps) {
     const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
     const [retrying, setRetrying] = useState(false);
+    const [showSlowNotice, setShowSlowNotice] = useState(false);
 
     const matchError = schedule.result.error?.stage === "MATCH" ? schedule.result.error : null;
 
@@ -38,12 +39,46 @@ export default function MatchStart({ updateSchedule, schedule }: MatchStartProps
         if (matchError) {
             return;
         }
-        const interval = setInterval(() => {
-            // 轮询接口,等待状态更新
-            updateSchedule();
-        }, 500);
-        return () => clearInterval(interval);
+
+        let cancelled = false;
+        let timeout: ReturnType<typeof setTimeout>;
+
+        const poll = async () => {
+            if (cancelled) {
+                return;
+            }
+
+            try {
+                console.debug("[pipeline] polling schedule status during matching");
+                await updateSchedule();
+            } finally {
+                if (!cancelled) {
+                    timeout = setTimeout(poll, 2000);
+                }
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+        };
     }, [matchError, updateSchedule]);
+
+    useEffect(() => {
+        if (matchError) {
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            setShowSlowNotice(true);
+        }, 60_000);
+
+        return () => clearTimeout(timer);
+    }, [matchError]);
 
     const handleRetry = async () => {
         try {
@@ -132,6 +167,12 @@ export default function MatchStart({ updateSchedule, schedule }: MatchStartProps
                             </div>
                         ))}
                     </div>
+                    {showSlowNotice ? (
+                        <p className="text-sm text-muted-foreground">
+                            Matching is taking longer than usual. Please keep this tab open — you’ll see detailed error logs if we
+                            detect a problem with the uploaded PDF or the AI service.
+                        </p>
+                    ) : null}
                 </div>
             </div>
         </div>

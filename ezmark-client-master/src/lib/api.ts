@@ -2,12 +2,42 @@ import { ExamResponse } from "@/types/exam";
 import { axiosInstance } from "./axios";
 import { defaultExamData } from "@/mock/default-exam-data";
 import { PDFReponse } from "@/components/landing-page/types";
-import { Class, ExamSchedule, LLMSubjectiveInput, Student, SubjectiveLLMResponse } from "@/types/types";
+import { Class, ExamSchedule, ExamScheduleResult, LLMSubjectiveInput, Student, SubjectiveLLMResponse } from "@/types/types";
 import { defaultScheduleResult } from "@/mock/default-schedule-result";
 
 const TEST_EXAM_ID = 'be82n8i3il88737l6hpw378q'
 const TEST_STUDENTS_IDs = ['e3qrlbh166g0n3awbmfw6elo', 'ti9estvbsu5me28i7vu14u3m', 'hayxqtevvesmosqnudz2014u']
 const TEST_CLASS_ID = 'q4p834olws2mr7mp9isy08z3'
+
+const cloneDefaultScheduleResult = (): ExamScheduleResult =>
+    JSON.parse(JSON.stringify(defaultScheduleResult));
+
+const normaliseScheduleResult = <T extends { result: unknown }>(item: T): T & { result: ExamScheduleResult } => {
+    let result = item.result as ExamScheduleResult | string | undefined | null;
+
+    if (typeof result === "string") {
+        try {
+            result = JSON.parse(result) as ExamScheduleResult;
+        } catch (error) {
+            console.error("[pipeline] failed to parse schedule result", error);
+            result = cloneDefaultScheduleResult();
+        }
+    } else if (!result || typeof result !== "object") {
+        result = cloneDefaultScheduleResult();
+    }
+
+    if (typeof result.error === "undefined") {
+        result.error = null;
+    }
+
+    return {
+        ...item,
+        result,
+    };
+};
+
+const normaliseScheduleCollection = <T extends { result: unknown }>(items: T[]): Array<T & { result: ExamScheduleResult }> =>
+    items.map((item) => normaliseScheduleResult(item));
 
 export async function getExamByUserId(userDocumentId: string): Promise<{ data: ExamResponse[] }> {
     const response = await axiosInstance.get(`/exams?populate=*&filters[user][documentId][$eq]=${userDocumentId}&pagination[limit]=10000`);
@@ -205,12 +235,13 @@ export async function deleteClassById(classDocumentId: string) {
 
 export async function getExamSchedulesByUserId(userDocumentId: string): Promise<ExamSchedule[]> {
     const response = await axiosInstance.get(`/schedules?populate=*&filters[teacher][documentId][$eq]=${userDocumentId}&pagination[limit]=10000`);
-    return response.data.data;
+    const schedules = Array.isArray(response.data.data) ? response.data.data : [];
+    return normaliseScheduleCollection(schedules) as ExamSchedule[];
 }
 
 export async function getExamScheduleById(examScheduleDocumentId: string): Promise<ExamSchedule> {
     const response = await axiosInstance.get(`/schedules/${examScheduleDocumentId}?populate=*`);
-    return response.data.data;
+    return normaliseScheduleResult(response.data.data) as ExamSchedule;
 }
 
 export async function createExamSchedule(examSchedule: {
@@ -252,19 +283,11 @@ export async function uploadPDF(formData: FormData, examScheduleDocumentId: stri
 export async function startMatching(examScheduleDocumentId: string) {
     const response = await axiosInstance.post(`/schedules/${examScheduleDocumentId}/startMatching`);
     const result = await axiosInstance.get(`/schedules/${examScheduleDocumentId}`);
-    const currentResult = result.data.data.result;
-    let normalisedResult = currentResult;
-    if (typeof currentResult === "string") {
-        try {
-            normalisedResult = JSON.parse(currentResult);
-        } catch (error) {
-            console.error("Failed to parse schedule result", error);
-        }
-    }
+    const normalisedSchedule = normaliseScheduleResult(result.data.data);
     await axiosInstance.put(`/schedules/${examScheduleDocumentId}`, {
         data: {
             result: {
-                ...normalisedResult,
+                ...normalisedSchedule.result,
                 progress: 'MATCH_START', // 开始匹配
                 error: null,
             }
