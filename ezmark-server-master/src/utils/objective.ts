@@ -5,31 +5,16 @@ import type { Metadata } from "sharp";
 import { Exam, MultipleChoiceQuestionData, QuestionType, UnionComponent } from "../../types/exam";
 import { ExamSchedule } from "../../types/type";
 import { recognizeMCQ } from "./llm";
-import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
+import {
+    QUESTION_CROP_PADDING,
+    computeNextComponentTopMap,
+    ensureScheduleResult,
+    getComponentCropBox,
+    serialiseScheduleResult,
+    toFiniteNumber,
+} from "./tools";
 
 const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
-
-const PADDING = 10;
-
-const toFiniteNumber = (value: unknown): number | null => {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value;
-    }
-
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!trimmed) {
-            return null;
-        }
-
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed)) {
-            return parsed;
-        }
-    }
-
-    return null;
-};
 
 type QuestionPosition = UnionComponent["position"];
 
@@ -39,8 +24,9 @@ async function ensureQuestionImage(options: {
     paperId: string;
     questionId: string;
     position?: QuestionPosition;
+    nextTopMm?: number | null;
 }) {
-    const { publicDir, scheduleId, paperId, questionId, position } = options;
+    const { publicDir, scheduleId, paperId, questionId, position, nextTopMm } = options;
     const questionDir = path.join(publicDir, 'pipeline', scheduleId, paperId, 'questions');
     const questionPath = path.join(questionDir, `${questionId}.png`);
 
@@ -74,22 +60,19 @@ async function ensureQuestionImage(options: {
             return null;
         }
 
-        const topMm = toFiniteNumber(position?.top);
-        const heightMm = toFiniteNumber(position?.height);
-        const leftMm = toFiniteNumber(position?.left);
-        const widthMm = toFiniteNumber(position?.width);
-
         const output = pageImage.clone();
 
-        if (topMm !== null && heightMm !== null && leftMm !== null && widthMm !== null) {
-            const leftPx = Math.max(mmToPixels(leftMm, metadata, "x") - PADDING, 0);
-            const topPx = Math.max(mmToPixels(topMm, metadata, "y") - PADDING, 0);
-            const desiredWidth = mmToPixels(widthMm, metadata, "x") + PADDING * 2;
-            const desiredHeight = mmToPixels(heightMm, metadata, "y") + PADDING * 2;
-            const clampedWidth = Math.max(1, Math.min(desiredWidth, width - leftPx));
-            const clampedHeight = Math.max(1, Math.min(desiredHeight, height - topPx));
+        const cropBox = position
+            ? getComponentCropBox({
+                position,
+                metadata,
+                nextTopMm,
+                padding: QUESTION_CROP_PADDING,
+            })
+            : null;
 
-            await output.extract({ left: leftPx, top: topPx, width: clampedWidth, height: clampedHeight }).toFile(questionPath);
+        if (cropBox) {
+            await output.extract(cropBox).toFile(questionPath);
             strapi.log.info(`startObjective(${scheduleId}): regenerated missing question ${questionId} for paper ${paperId} on page ${pageIndex}`);
         } else {
             await output.toFile(questionPath);
@@ -157,12 +140,14 @@ export async function startObjective(documentId: string) {
 
     // 5. 收集所有的客观题
     const examData = schedule.exam.examData as Exam;
-    const objectiveQuestions: UnionComponent[] = []
-    for (const question of examData.components) {
-        if (OBJECTIVE_TYPES.includes(question.type as QuestionType)) {
-            objectiveQuestions.push(question)
-        }
-    }
+    const allComponents: UnionComponent[] = Array.isArray(examData.components)
+        ? examData.components
+        : [];
+    const objectiveQuestions = allComponents.filter((question) =>
+        OBJECTIVE_TYPES.includes(question.type as QuestionType),
+    );
+
+    const nextComponentTopMap = computeNextComponentTopMap(allComponents);
 
     // 6. 一次性发送所有学生的所有客观题答案图片的请求
     const rootDir = process.cwd();
@@ -175,6 +160,7 @@ export async function startObjective(documentId: string) {
         questionId: string;
         answerImage: string;
         position?: QuestionPosition;
+        nextTopMm?: number | null;
     };
 
     const allStudentAnswers: StudentAnswerTask[] = [];
@@ -187,6 +173,7 @@ export async function startObjective(documentId: string) {
                 questionId: questionId,
                 answerImage: joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`),
                 position: question.position,
+                nextTopMm: nextComponentTopMap.get(question.id) ?? null,
             });
         });
     }
@@ -200,6 +187,7 @@ export async function startObjective(documentId: string) {
             paperId: studentAnswer.paperId,
             questionId: studentAnswer.questionId,
             position: studentAnswer.position,
+            nextTopMm: studentAnswer.nextTopMm,
         });
 
         if (!ensuredPath) {

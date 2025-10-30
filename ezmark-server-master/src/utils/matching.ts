@@ -5,37 +5,23 @@ import sharp from "sharp";
 import type { Metadata } from "sharp";
 import { PDFDocument } from "pdf-lib";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
-import { ExamResponse } from "../../types/exam";
+import { ExamResponse, UnionComponent } from "../../types/exam";
 import pdf2png from "./pdf2png";
-import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
+import {
+    QUESTION_CROP_PADDING,
+    computeNextComponentTopMap,
+    ensureScheduleResult,
+    getComponentCropBox,
+    mmToPixels,
+    serialiseScheduleResult,
+    toFiniteNumber,
+} from "./tools";
 import { recognizeHeader, LLMRequestError } from "./llm";
 import type { Header } from "./schema";
-
-const PADDING = 10;
 
 const createPaperId = () => randomBytes(8).toString("hex");
 
 const MATCH_STAGE = "MATCH";
-
-const toFiniteNumber = (value: unknown): number | null => {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value;
-    }
-
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!trimmed) {
-            return null;
-        }
-
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed)) {
-            return parsed;
-        }
-    }
-
-    return null;
-};
 
 const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
 
@@ -170,7 +156,10 @@ export async function startMatching(documentId: string) {
     // 5. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
     // 5.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
     const studentCount = classData.students.length;
-    const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
+    const components: UnionComponent[] = Array.isArray(exam.examData?.components)
+        ? (exam.examData.components as UnionComponent[])
+        : [];
+    const nextComponentTopMap = computeNextComponentTopMap(components);
     const positionedPageIndices = components
         .map((component) => toFiniteNumber(component.position?.pageIndex))
         .filter((pageIndex): pageIndex is number => pageIndex !== null);
@@ -290,9 +279,25 @@ export async function startMatching(documentId: string) {
                 firstPageInfo = imageInfo;
             }
             // 过滤出当前页面的组件
-            const pageComponents = exam.examData.components.filter(com => {
+            const pageComponents = components.filter(com => {
                 const componentPageIndex = toFiniteNumber(com.position?.pageIndex);
                 return componentPageIndex === pageIndex;
+            }).sort((a, b) => {
+                const topA = toFiniteNumber(a.position?.top) ?? 0;
+                const topB = toFiniteNumber(b.position?.top) ?? 0;
+
+                if (topA !== topB) {
+                    return topA - topB;
+                }
+
+                const leftA = toFiniteNumber(a.position?.left) ?? 0;
+                const leftB = toFiniteNumber(b.position?.left) ?? 0;
+
+                if (leftA !== leftB) {
+                    return leftA - leftB;
+                }
+
+                return a.id.localeCompare(b.id);
             });
             console.log(`page-${pageIndex} has ${pageComponents.length} components`)
             // 循环处理每个组件
@@ -304,36 +309,21 @@ export async function startMatching(documentId: string) {
                     continue;
                 }
                 const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
-                const componentTop = toFiniteNumber(rect.top);
-                const componentLeft = toFiniteNumber(rect.left);
-                const componentWidth = toFiniteNumber(rect.width);
-                const componentHeight = toFiniteNumber(rect.height);
+                const nextTopMm = nextComponentTopMap.get(comp.id) ?? null;
+                const cropBox = getComponentCropBox({
+                    position: rect,
+                    metadata: imageInfo,
+                    nextTopMm,
+                    padding: QUESTION_CROP_PADDING,
+                });
 
-                if (componentTop === null || componentHeight === null || componentLeft === null || componentWidth === null) {
-                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has invalid dimensions on page ${pageIndex}`);
-                    continue;
-                }
-
-                const pageWidth = imageInfo.width ?? 0;
-                const pageHeight = imageInfo.height ?? 0;
-
-                if (!pageWidth || !pageHeight) {
-                    strapi.log.warn(`startMatching(${documentId}): page ${pageIndex} metadata missing dimensions for component ${comp.id}`);
-                    continue;
-                }
-
-                const left = Math.max(mmToPixels(componentLeft, imageInfo, "x") - PADDING, 0);
-                const top = Math.max(mmToPixels(componentTop, imageInfo, "y") - PADDING, 0);
-                const width = Math.min(pageWidth - left, mmToPixels(componentWidth, imageInfo, "x") + PADDING * 2);
-                const height = Math.min(pageHeight - top, mmToPixels(componentHeight, imageInfo, "y") + PADDING * 2);
-
-                if (width <= 0 || height <= 0) {
-                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has non-positive crop size on page ${pageIndex}`);
+                if (!cropBox) {
+                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has invalid crop geometry on page ${pageIndex}`);
                     continue;
                 }
 
                 // 裁剪图片
-                await image.clone().extract({ left, top, width, height }).toFile(outputFilePath);
+                await image.clone().extract(cropBox).toFile(outputFilePath);
             }
         }
 
