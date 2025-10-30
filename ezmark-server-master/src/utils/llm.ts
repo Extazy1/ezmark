@@ -225,12 +225,14 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
 
         const qwenContent = [
             {
-                type: "input_text",
+                type: "text",
                 text: HEADER_PROMPT,
             },
             {
-                type: "input_image",
-                image_url: `data:image/png;base64,${base64Image}`,
+                type: "image_url",
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}`,
+                },
             },
         ];
 
