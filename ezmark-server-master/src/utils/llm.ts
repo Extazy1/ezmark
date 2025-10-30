@@ -291,9 +291,25 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         });
 
         try {
-            const parsedContent: unknown = typeof content === "string" && content.trim().length > 0
-                ? JSON.parse(content)
+            // Clean markdown code blocks from response (Qwen sometimes wraps JSON in ```json ... ```)
+            let cleanedContent = content?.trim() || "";
+            if (cleanedContent.startsWith("```")) {
+                // Remove opening ```json or ``` and closing ```
+                cleanedContent = cleanedContent.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+            }
+            
+            const parsedContent: unknown = cleanedContent.length > 0
+                ? JSON.parse(cleanedContent)
                 : {};
+            
+            // Handle both snake_case (student_id) and camelCase (studentId) formats
+            if (parsedContent && typeof parsedContent === 'object') {
+                const obj = parsedContent as Record<string, unknown>;
+                if ('student_id' in obj && !('studentId' in obj)) {
+                    obj.studentId = obj.student_id;
+                }
+            }
+            
             const headerData = HeaderSchema.parse(parsedContent);
             return {
                 name: headerData.name,

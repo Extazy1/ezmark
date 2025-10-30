@@ -46,6 +46,45 @@ const toPosixPath = (...segments: string[]) => path.posix.join(...segments);
 
 const isoTimestamp = () => new Date().toISOString();
 
+// Calculate similarity between two strings (0 = completely different, 1 = identical)
+const calculateSimilarity = (str1: string, str2: string): number => {
+    if (str1 === str2) return 1;
+    if (!str1 || !str2) return 0;
+    
+    const longer = str1.length > str2.length ? str1 : str2;
+    const shorter = str1.length > str2.length ? str2 : str1;
+    
+    if (longer.length === 0) return 1;
+    
+    // Calculate Levenshtein distance
+    const editDistance = (s1: string, s2: string): number => {
+        s1 = s1.toLowerCase();
+        s2 = s2.toLowerCase();
+        
+        const costs: number[] = [];
+        for (let i = 0; i <= s1.length; i++) {
+            let lastValue = i;
+            for (let j = 0; j <= s2.length; j++) {
+                if (i === 0) {
+                    costs[j] = j;
+                } else if (j > 0) {
+                    let newValue = costs[j - 1];
+                    if (s1.charAt(i - 1) !== s2.charAt(j - 1)) {
+                        newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+                    }
+                    costs[j - 1] = lastValue;
+                    lastValue = newValue;
+                }
+            }
+            if (i > 0) costs[s2.length] = lastValue;
+        }
+        return costs[s2.length];
+    };
+    
+    const distance = editDistance(longer, shorter);
+    return (longer.length - distance) / longer.length;
+};
+
 async function persistScheduleResult(schedule: ExamSchedule) {
     await strapi.documents('api::schedule.schedule').update({
         documentId: schedule.documentId,
@@ -555,19 +594,55 @@ export async function startMatching(documentId: string) {
     const unmatchedPapers: Paper[] = []; // 未匹配到学生的试卷
     const matchedStudentIds = new Set<string>();
 
-    // 精确匹配：遍历试卷查找匹配的学生
+    // 第一轮：精确匹配
     for (const paper of papers) {
         const matchedStudent = students.find(student => student.studentId === paper.studentId);
         if (matchedStudent) {
-            // 找到匹配的学生
             matchedPairs.push({
                 paper,
                 student: matchedStudent
             });
             matchedStudentIds.add(matchedStudent.studentId);
+            logMatchStep(documentId, `exact match: ${paper.paperId} -> ${matchedStudent.studentId} (${matchedStudent.name})`);
         } else {
-            // 未找到匹配的学生
             unmatchedPapers.push(paper);
+        }
+    }
+    
+    // 第二轮：模糊匹配未匹配的试卷（用于处理 OCR 识别错误）
+    const SIMILARITY_THRESHOLD = 0.75; // 75% 相似度阈值
+    const stillUnmatched: Paper[] = [];
+    
+    for (const paper of unmatchedPapers) {
+        // 跳过识别为 Unknown 的试卷
+        if (paper.studentId === 'Unknown' || !paper.studentId) {
+            stillUnmatched.push(paper);
+            continue;
+        }
+        
+        // 找到未匹配的学生中相似度最高的
+        let bestMatch: Student | null = null;
+        let bestSimilarity = 0;
+        
+        const availableStudents = students.filter(s => !matchedStudentIds.has(s.studentId));
+        
+        for (const student of availableStudents) {
+            const similarity = calculateSimilarity(paper.studentId, student.studentId);
+            if (similarity > bestSimilarity && similarity >= SIMILARITY_THRESHOLD) {
+                bestSimilarity = similarity;
+                bestMatch = student;
+            }
+        }
+        
+        if (bestMatch) {
+            matchedPairs.push({
+                paper,
+                student: bestMatch
+            });
+            matchedStudentIds.add(bestMatch.studentId);
+            logMatchStep(documentId, `fuzzy match (${(bestSimilarity * 100).toFixed(1)}% similar): ${paper.paperId} with studentId="${paper.studentId}" -> ${bestMatch.studentId} (${bestMatch.name})`);
+        } else {
+            stillUnmatched.push(paper);
             logMatchStep(documentId, `unmatched paper: ${paper.paperId}, recognized studentId="${paper.studentId}", name="${paper.name}"`);
         }
     }
@@ -580,7 +655,7 @@ export async function startMatching(documentId: string) {
     }
     
     // 记录匹配和未匹配信息
-    logMatchStep(documentId, `matching complete: ${matchedPairs.length} matched, ${unmatchedPapers.length} unmatched papers, ${unmatchedStudents.length} unmatched students`);
+    logMatchStep(documentId, `matching complete: ${matchedPairs.length} matched (including fuzzy), ${stillUnmatched.length} unmatched papers, ${unmatchedStudents.length} unmatched students`);
 
     // 8. 更新Schedule的result和papers，添加匹配结果
     logMatchStep(documentId, "preparing result data...");
@@ -593,12 +668,12 @@ export async function startMatching(documentId: string) {
         })),
         unmatched: {
             studentIds: unmatchedStudents.map(student => student.studentId),
-            papers: unmatchedPapers.map(paper => ({
+            papers: stillUnmatched.map(paper => ({
                 paperId: paper.paperId,
                 headerImgUrl: paper.headerImgUrl,
             }))
         },
-        done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
+        done: stillUnmatched.length === 0 && unmatchedStudents.length === 0
     };
     
     const updatedResult = {
@@ -625,7 +700,7 @@ export async function startMatching(documentId: string) {
 
     const statusMsg = matchResult.done 
         ? "matching completed successfully - all papers and students matched" 
-        : `matching completed with ${unmatchedPapers.length} unmatched papers and ${unmatchedStudents.length} unmatched students`;
+        : `matching completed with ${stillUnmatched.length} unmatched papers and ${unmatchedStudents.length} unmatched students`;
     logMatchStep(documentId, statusMsg);
 
     // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
