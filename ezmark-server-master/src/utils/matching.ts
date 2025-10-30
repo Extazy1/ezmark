@@ -158,20 +158,48 @@ export async function startMatching(documentId: string) {
     const positionedPageIndices = components
         .map((component) => component.position?.pageIndex)
         .filter((pageIndex): pageIndex is number => typeof pageIndex === 'number' && Number.isFinite(pageIndex));
-        if (positionedPageIndices.length === 0) {
-            await markMatchError(schedule, documentId, 'Unable to determine exam page count because no component positions were found.');
-            return;
-        }
-    const pagesPerExam = Math.max(...positionedPageIndices) + 1;
-    const totalPages = studentCount * pagesPerExam;
+
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
     const actualTotalPages = pdfDoc.getPageCount();
-        if (actualTotalPages !== totalPages) {
-            const msg = `The number of PDF pages does not equal (number of students * number of exam pages), please check if the PDF file is correct`;
-            await markMatchError(schedule, documentId, msg);
-            return;
+
+    if (studentCount <= 0) {
+        await markMatchError(schedule, documentId, 'Unable to determine exam page count because the class has no students.');
+        return;
+    }
+
+    let pagesPerExam: number | null = null;
+
+    if (positionedPageIndices.length > 0) {
+        pagesPerExam = Math.max(...positionedPageIndices) + 1;
+    }
+
+    if (!pagesPerExam || actualTotalPages !== studentCount * pagesPerExam) {
+        const fallback = actualTotalPages % studentCount === 0
+            ? actualTotalPages / studentCount
+            : null;
+
+        if (fallback) {
+            if (!pagesPerExam) {
+                strapi.log.warn(`startMatching(${documentId}): derived pagesPerExam=${fallback} from PDF page count because no component positions were found.`);
+            } else {
+                strapi.log.warn(`startMatching(${documentId}): overriding pagesPerExam=${pagesPerExam} with ${fallback} because PDF page count (${actualTotalPages}) does not equal studentCount (${studentCount}) * pagesPerExam.`);
+            }
+            pagesPerExam = fallback;
         }
+    }
+
+    if (!pagesPerExam) {
+        await markMatchError(schedule, documentId, 'Unable to determine exam page count because no component positions were found and the PDF pages could not be evenly distributed across students.');
+        return;
+    }
+
+    const totalPages = studentCount * pagesPerExam;
+    if (actualTotalPages !== totalPages) {
+        const msg = `The number of PDF pages (${actualTotalPages}) does not equal students (${studentCount}) * pagesPerExam (${pagesPerExam}), please check if the PDF file is correct.`;
+        await markMatchError(schedule, documentId, msg);
+        return;
+    }
 
     logMatchStep(documentId, `detected ${actualTotalPages} pages (${pagesPerExam} per exam for ${studentCount} students)`);
 
