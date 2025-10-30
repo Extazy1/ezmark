@@ -219,11 +219,7 @@ export async function startMatching(documentId: string) {
 
     const papers: Paper[] = [];
     const headerComponent = components.find(com => com.type === "default-header");
-    if (!headerComponent) {
-        await markMatchError(schedule, documentId, "Unable to locate header component in exam definition.");
-        return;
-    }
-    const headerComponentId = headerComponent.id;
+    const headerComponentId = headerComponent?.id ?? null;
     const headerTasks: { diskPath: string; paperIndex: number }[] = [];
 
     for (let studentIndex = 0; studentIndex < studentCount; studentIndex++) {
@@ -322,8 +318,20 @@ export async function startMatching(documentId: string) {
         }
 
         if (!headerDiskPath || !headerRelativePath) {
-            await markMatchError(schedule, documentId, 'Unable to locate header image for one of the papers. Please ensure the exam definition contains a header component with valid positioning data.');
-            return;
+            const fallbackHeaderPath = path.join(paperDir, 'page-0.png');
+            if (!fs.existsSync(fallbackHeaderPath)) {
+                await markMatchError(schedule, documentId, 'Unable to locate header image for one of the papers. Please ensure the exam definition contains a header component with valid positioning data.');
+                return;
+            }
+
+            headerDiskPath = fallbackHeaderPath;
+            headerRelativePath = toPosixPath('pipeline', schedule.documentId, paperId, 'page-0.png');
+
+            if (!headerComponentId) {
+                strapi.log.warn(`startMatching(${documentId}): header component missing from exam definition, defaulting to full first page for header recognition.`);
+            } else {
+                strapi.log.warn(`startMatching(${documentId}): header crop missing on disk for component ${headerComponentId}, defaulting to full first page.`);
+            }
         }
 
         const paperIndex = papers.length;
