@@ -86,8 +86,22 @@ function resolveMatchingClient(): MatchingClient {
         ?? optionalEnv("MATCHING_VENDOR");
     const normalizedHint = providerHint?.toLowerCase();
     const model = optionalEnv("MATCHING_MODEL_NAME")?.toLowerCase() ?? "";
+    const hasQwenCredentials = Boolean(optionalEnv("QWEN_API_KEY"));
 
-    if (normalizedHint === "qwen" || model.startsWith("qwen") || model.includes("dashscope")) {
+    if (normalizedHint) {
+        if (["qwen", "dashscope", "ali", "aliyun"].includes(normalizedHint)) {
+            return { provider: "qwen", client: getQwenClient() };
+        }
+        if (["openai", "azure-openai", "azure"].includes(normalizedHint)) {
+            return { provider: "openai", client: getGptClient() };
+        }
+    }
+
+    if (hasQwenCredentials) {
+        return { provider: "qwen", client: getQwenClient() };
+    }
+
+    if (model.startsWith("qwen") || model.includes("dashscope")) {
         return { provider: "qwen", client: getQwenClient() };
     }
 
