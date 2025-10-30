@@ -36,6 +36,25 @@ export default function MatchStart({ updateSchedule, schedule }: MatchStartProps
     }, []);
 
     useEffect(() => {
+        console.debug("[pipeline] match progress", {
+            scheduleId: schedule.documentId,
+            progress: schedule.result.progress,
+        });
+    }, [schedule.documentId, schedule.result.progress]);
+
+    useEffect(() => {
+        if (!matchError) {
+            return;
+        }
+
+        console.error("[pipeline] matching failed", {
+            scheduleId: schedule.documentId,
+            message: matchError.message,
+            details: matchError.details,
+        });
+    }, [matchError, schedule.documentId]);
+
+    useEffect(() => {
         if (matchError) {
             return;
         }

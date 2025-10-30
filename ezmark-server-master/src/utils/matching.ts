@@ -6,7 +6,7 @@ import { PDFDocument } from "pdf-lib";
 import pdf2png from "./pdf2png";
 import sharp from "sharp";
 import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
-import { recognizeHeader } from "./llm";
+import { recognizeHeader, LLMRequestError } from "./llm";
 
 const PADDING = 10;
 
@@ -252,15 +252,21 @@ export async function startMatching(documentId: string) {
     // 6.1 识别所有header
     console.log(`Start recognizing header... for schedule ${schedule.documentId}`)
     logMatchStep(documentId, `recognising ${headerImagePaths.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
-    const headerResults = await Promise.all(headerImagePaths.map(async (path) => {
+    const scheduleId = schedule.documentId;
+    const headerResults = await Promise.all(headerImagePaths.map(async (path, index) => {
         try {
-            const header = await recognizeHeader(path);
+            const header = await recognizeHeader(path, {
+                scheduleId,
+                headerIndex: index,
+                totalHeaders: headerImagePaths.length,
+            });
             return header;
         } catch (error) {
             strapi.log.error(`startMatching(${documentId}): header recognition failed for ${path}`, error instanceof Error ? error : undefined);
             throw error;
         }
     }));
+    logMatchStep(documentId, `header recognition completed for ${headerResults.length} papers`);
     console.log(headerResults)
     console.log(`End recognizing header... for schedule ${schedule.documentId}`)
 
@@ -333,10 +339,25 @@ export async function startMatching(documentId: string) {
         // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
     } catch (error) {
         if (schedule) {
+            const message = (() => {
+                if (error instanceof LLMRequestError) {
+                    const meta = error.meta ?? {};
+                    const header = typeof meta.header === "string" ? meta.header : undefined;
+                    const model = typeof meta.model === "string" ? meta.model : undefined;
+                    const parts = [error.message];
+                    if (header || model) {
+                        const contextParts = [header ? `header ${header}` : null, model ? `via ${model}` : null].filter(Boolean);
+                        parts.push(`(${contextParts.join(" ")})`);
+                    }
+                    return parts.join(" ");
+                }
+                return error instanceof Error ? error.message : 'Unknown matching error';
+            })();
+
             await markMatchError(
                 schedule,
                 documentId,
-                error instanceof Error ? error.message : 'Unknown matching error',
+                message,
                 error,
             );
         } else {

@@ -5,6 +5,42 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import { Header, HeaderSchema, MCQResult, MCQSchema, SubjectiveInput, SubjectiveResult, SubjectiveSchema } from "./schema";
 import { imageToBase64 } from "./tools";
 
+export class LLMRequestError extends Error {
+    public readonly meta: Record<string, unknown>;
+
+    constructor(message: string, meta: Record<string, unknown> = {}, cause?: unknown) {
+        super(message);
+        this.name = "LLMRequestError";
+        this.meta = meta;
+        if (cause !== undefined) {
+            (this as unknown as { cause?: unknown }).cause = cause;
+        }
+    }
+}
+
+const llmLogger = {
+    info(message: string, meta?: Record<string, unknown>) {
+        if (typeof strapi !== "undefined" && strapi?.log) {
+            strapi.log.info(meta ? `${message} ${JSON.stringify(meta)}` : message);
+        } else {
+            console.info(message, meta ?? "");
+        }
+    },
+    error(message: string, error?: unknown, meta?: Record<string, unknown>) {
+        if (typeof strapi !== "undefined" && strapi?.log) {
+            strapi.log.error(meta ? `${message} ${JSON.stringify(meta)}` : message, error instanceof Error ? error : undefined);
+        } else {
+            console.error(message, meta ?? "", error);
+        }
+    }
+};
+
+type RecognizeHeaderOptions = {
+    scheduleId?: string;
+    headerIndex?: number;
+    totalHeaders?: number;
+};
+
 function getRequiredEnvVar(key: string): string {
     const value = process.env[key]?.trim();
     if (!value) {
@@ -38,35 +74,71 @@ function getQwenClient(): OpenAI {
     return qwenClient;
 }
 
-export async function recognizeHeader(imagePath: string): Promise<Header> {
-    console.log('MODEL NAME', process.env.MATCHING_MODEL_NAME);
-    const response = await getGptClient().chat.completions.create({
-        model: process.env.MATCHING_MODEL_NAME,
-        messages: [{
-            role: "user",
-            content: [
-                {
-                    type: "image_url",
-                    image_url: {
-                        url: `data:image/png;base64,${imageToBase64(imagePath)}`,
-                    },
-                },
-                {
-                    type: "text",
-                    text: HEADER_PROMPT,
-                },
-            ]
-        }],
-        response_format: zodResponseFormat(HeaderSchema, 'header')
+export async function recognizeHeader(imagePath: string, options: RecognizeHeaderOptions = {}): Promise<Header> {
+    const model = process.env.MATCHING_MODEL_NAME;
+    const label = typeof options.headerIndex === "number" && typeof options.totalHeaders === "number"
+        ? `${options.headerIndex + 1}/${options.totalHeaders}`
+        : `${(options.headerIndex ?? 0) + 1}`;
+
+    llmLogger.info("[llm] sending header image for recognition", {
+        scheduleId: options.scheduleId,
+        imagePath,
+        model,
+        header: label,
     });
+
     try {
-        const header = JSON.parse(response.choices[0].message.content);
-        return header as Header;
-    } catch (error) {
-        return {
-            name: 'Unknown',
-            studentId: 'Unknown'
+        const response = await getGptClient().chat.completions.create({
+            model,
+            messages: [{
+                role: "user",
+                content: [
+                    {
+                        type: "image_url",
+                        image_url: {
+                            url: `data:image/png;base64,${imageToBase64(imagePath)}`,
+                        },
+                    },
+                    {
+                        type: "text",
+                        text: HEADER_PROMPT,
+                    },
+                ]
+            }],
+            response_format: zodResponseFormat(HeaderSchema, 'header')
+        });
+
+        const content = response.choices[0].message.content;
+        llmLogger.info("[llm] header recognition succeeded", {
+            scheduleId: options.scheduleId,
+            header: label,
+        });
+
+        try {
+            const header = JSON.parse(content ?? "{}");
+            return header as Header;
+        } catch (parseError) {
+            llmLogger.error("[llm] failed to parse header recognition response", parseError, {
+                scheduleId: options.scheduleId,
+                header: label,
+            });
+            return {
+                name: 'Unknown',
+                studentId: 'Unknown'
+            };
         }
+    } catch (error) {
+        const message = "Failed to send header image to the matching model";
+        llmLogger.error("[llm] header recognition failed", error, {
+            scheduleId: options.scheduleId,
+            header: label,
+            model,
+        });
+        throw new LLMRequestError(message, {
+            scheduleId: options.scheduleId,
+            header: label,
+            model,
+        }, error);
     }
 }
 
