@@ -76,15 +76,20 @@ async function ensureQuestionImage(options: {
 
         const topMm = toFiniteNumber(position?.top);
         const heightMm = toFiniteNumber(position?.height);
+        const leftMm = toFiniteNumber(position?.left);
+        const widthMm = toFiniteNumber(position?.width);
 
         const output = pageImage.clone();
 
-        if (topMm !== null && heightMm !== null) {
-            const topPx = Math.max(mmToPixels(topMm, metadata) - PADDING, 0);
-            const desiredHeight = mmToPixels(heightMm, metadata) + PADDING * 2;
+        if (topMm !== null && heightMm !== null && leftMm !== null && widthMm !== null) {
+            const leftPx = Math.max(mmToPixels(leftMm, metadata, "x") - PADDING, 0);
+            const topPx = Math.max(mmToPixels(topMm, metadata, "y") - PADDING, 0);
+            const desiredWidth = mmToPixels(widthMm, metadata, "x") + PADDING * 2;
+            const desiredHeight = mmToPixels(heightMm, metadata, "y") + PADDING * 2;
+            const clampedWidth = Math.max(1, Math.min(desiredWidth, width - leftPx));
             const clampedHeight = Math.max(1, Math.min(desiredHeight, height - topPx));
 
-            await output.extract({ left: 0, top: topPx, width, height: clampedHeight }).toFile(questionPath);
+            await output.extract({ left: leftPx, top: topPx, width: clampedWidth, height: clampedHeight }).toFile(questionPath);
             strapi.log.info(`startObjective(${scheduleId}): regenerated missing question ${questionId} for paper ${paperId} on page ${pageIndex}`);
         } else {
             await output.toFile(questionPath);

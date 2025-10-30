@@ -3,10 +3,19 @@ import fs from 'fs'
 import { ExamScheduleResult } from "../../types/type";
 
 // 转换毫米到像素的函数
-export function mmToPixels(mm: number, imageInfo: sharp.Metadata, pageWidthMM: number = 210): number {
-    // A4尺寸为210mm x 297mm
-    // 计算转换比例：图像宽度（像素）/ 页面宽度（毫米）
-    const pixelsPerMm = imageInfo.width! / pageWidthMM;
+export function mmToPixels(
+    mm: number,
+    imageInfo: sharp.Metadata,
+    axis: "x" | "y" = "x",
+    pageSizeMM?: number,
+): number {
+    const dimension = axis === "x" ? imageInfo.width : imageInfo.height;
+    if (!dimension || dimension <= 0) {
+        throw new Error(`Cannot convert mm to pixels without valid image ${axis === "x" ? "width" : "height"}`);
+    }
+
+    const defaultPageSize = pageSizeMM ?? (axis === "x" ? 210 : 297);
+    const pixelsPerMm = dimension / defaultPageSize;
     return Math.round(mm * pixelsPerMm);
 }
 

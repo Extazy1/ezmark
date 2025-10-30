@@ -304,17 +304,34 @@ export async function startMatching(documentId: string) {
                     continue;
                 }
                 const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
-                // 将毫米转换为像素
-                const left = 0;
                 const componentTop = toFiniteNumber(rect.top);
+                const componentLeft = toFiniteNumber(rect.left);
+                const componentWidth = toFiniteNumber(rect.width);
                 const componentHeight = toFiniteNumber(rect.height);
-                if (componentTop === null || componentHeight === null) {
+
+                if (componentTop === null || componentHeight === null || componentLeft === null || componentWidth === null) {
                     strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has invalid dimensions on page ${pageIndex}`);
                     continue;
                 }
-                const width = imageInfo.width!;
-                const top = Math.max(mmToPixels(componentTop, imageInfo) - PADDING, 0);
-                const height = mmToPixels(componentHeight, imageInfo) + PADDING * 2;
+
+                const pageWidth = imageInfo.width ?? 0;
+                const pageHeight = imageInfo.height ?? 0;
+
+                if (!pageWidth || !pageHeight) {
+                    strapi.log.warn(`startMatching(${documentId}): page ${pageIndex} metadata missing dimensions for component ${comp.id}`);
+                    continue;
+                }
+
+                const left = Math.max(mmToPixels(componentLeft, imageInfo, "x") - PADDING, 0);
+                const top = Math.max(mmToPixels(componentTop, imageInfo, "y") - PADDING, 0);
+                const width = Math.min(pageWidth - left, mmToPixels(componentWidth, imageInfo, "x") + PADDING * 2);
+                const height = Math.min(pageHeight - top, mmToPixels(componentHeight, imageInfo, "y") + PADDING * 2);
+
+                if (width <= 0 || height <= 0) {
+                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has non-positive crop size on page ${pageIndex}`);
+                    continue;
+                }
+
                 // 裁剪图片
                 await image.clone().extract({ left, top, width, height }).toFile(outputFilePath);
             }
