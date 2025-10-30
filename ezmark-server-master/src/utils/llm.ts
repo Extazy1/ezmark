@@ -1,5 +1,6 @@
 import "dotenv/config";
 import fs from "node:fs";
+import path from "node:path";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { HEADER_PROMPT, MCQ_PROMPT, SUBJECTIVE_PROMPT } from "./prompt";
@@ -173,14 +174,41 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         : `${(options.headerIndex ?? 0) + 1}`;
 
     if (!fs.existsSync(imagePath)) {
-        const meta = {
+        const dirPath = path.dirname(imagePath);
+        const meta: Record<string, unknown> = {
             scheduleId: options.scheduleId,
             imagePath,
             provider,
             model,
             modelSource,
             header: label,
+            directory: dirPath,
         };
+
+        try {
+            const dirExists = fs.existsSync(dirPath);
+            meta.directoryExists = dirExists;
+            if (dirExists) {
+                try {
+                    const entries = fs.readdirSync(dirPath);
+                    meta.directorySample = entries.slice(0, 20);
+                    meta.directoryCount = entries.length;
+                } catch (readError) {
+                    meta.directoryReadError = readError instanceof Error ? readError.message : String(readError);
+                }
+            }
+        } catch (dirError) {
+            meta.directoryCheckError = dirError instanceof Error ? dirError.message : String(dirError);
+        }
+
+        try {
+            fs.accessSync(dirPath, fs.constants.W_OK);
+            meta.directoryWritable = true;
+        } catch (accessError) {
+            meta.directoryWritable = false;
+            meta.directoryAccessError = accessError instanceof Error ? accessError.message : String(accessError);
+        }
+
         llmLogger.error("[llm] header image file missing", undefined, meta);
         throw new LLMRequestError("Header image file not found", meta);
     }

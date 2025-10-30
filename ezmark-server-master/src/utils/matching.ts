@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
 import sharp from "sharp";
+import type { Metadata } from "sharp";
 import { PDFDocument } from "pdf-lib";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
 import { ExamResponse } from "../../types/exam";
@@ -214,18 +215,33 @@ export async function startMatching(documentId: string) {
     }
     const headerComponentId = headerComponent.id;
     const headerImagePaths: string[] = [];
-    for (let i = 0; i < studentCount; i++) {
+    const allImages = fs.readdirSync(allImagesDir).sort((a, b) => {
+        const matchA = a.match(/(\d+)/);
+        const matchB = b.match(/(\d+)/);
+        if (matchA && matchB) {
+            return Number(matchA[1]) - Number(matchB[1]);
+        }
+        return a.localeCompare(b);
+    });
+    for (let studentIndex = 0; studentIndex < studentCount; studentIndex++) {
         const paperId = createPaperId();
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
         if (!fs.existsSync(paperDir)) {
             fs.mkdirSync(paperDir, { recursive: true });
         }
         // 计算页面范围
-        const startPage = i * pagesPerExam;
+        const startPage = studentIndex * pagesPerExam;
         const endPage = startPage + pagesPerExam;
         // 根据页面范围，从allImagesDir中获取图片
-        const images = fs.readdirSync(allImagesDir);
-        const imagesInRange = images.slice(startPage, endPage);
+        const imagesInRange = allImages.slice(startPage, endPage);
+        if (imagesInRange.length !== pagesPerExam) {
+            await markMatchError(
+                schedule,
+                documentId,
+                `Expected ${pagesPerExam} pages for paper ${paperId} but found ${imagesInRange.length}. Please verify the generated pipeline images.`,
+            );
+            return;
+        }
         // 将图片保存到paperDir中
         imagesInRange.forEach((image, index) => {
             fs.copyFileSync(path.join(allImagesDir, image), path.join(paperDir, `page-${index}.png`));
@@ -239,19 +255,28 @@ export async function startMatching(documentId: string) {
             fs.mkdirSync(questionsDir, { recursive: true });
         }
 
+        let firstPageInfo: Metadata | null = null;
+
         // 循环处理每一页
-        for (let i = 0; i < pagesPerExam; i++) {
-            const imgPath = path.join(paperDir, `page-${i}.png`);
+        for (let pageIndex = 0; pageIndex < pagesPerExam; pageIndex++) {
+            const imgPath = path.join(paperDir, `page-${pageIndex}.png`);
             // 加载当前页图片
             const image = sharp(imgPath);
             const imageInfo = await image.metadata();
+            if (pageIndex === 0) {
+                firstPageInfo = imageInfo;
+            }
             // 过滤出当前页面的组件
-            const pageComponents = exam.examData.components.filter(com => com.position?.pageIndex === i);
-            console.log(`page-${i} has ${pageComponents.length} components`)
+            const pageComponents = exam.examData.components.filter(com => com.position?.pageIndex === pageIndex);
+            console.log(`page-${pageIndex} has ${pageComponents.length} components`)
             // 循环处理每个组件
             for (let compIndex = 0; compIndex < pageComponents.length; compIndex++) {
                 const comp = pageComponents[compIndex];
                 const rect = comp.position;
+                if (!rect) {
+                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} missing position data on page ${pageIndex}`);
+                    continue;
+                }
                 const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
                 // 将毫米转换为像素
                 const left = 0;
@@ -263,8 +288,49 @@ export async function startMatching(documentId: string) {
             }
         }
 
+        const headerImagePath = path.join(questionsDir, `${headerComponentId}.png`);
+        if (!fs.existsSync(headerImagePath)) {
+            const fallbackSource = path.join(paperDir, 'page-0.png');
+            if (!fs.existsSync(fallbackSource)) {
+                await markMatchError(schedule, documentId, `Unable to generate header image because ${fallbackSource} is missing.`);
+                return;
+            }
+
+            try {
+                if (!firstPageInfo) {
+                    firstPageInfo = await sharp(fallbackSource).metadata();
+                }
+                const pageWidth = firstPageInfo.width ?? 0;
+                const pageHeight = firstPageInfo.height ?? 0;
+                const fallbackHeight = Math.max(Math.round(pageHeight * 0.25), 1);
+
+                if (!pageWidth || !pageHeight) {
+                    throw new Error(`invalid fallback dimensions (width=${pageWidth}, height=${pageHeight})`);
+                }
+
+                await sharp(fallbackSource)
+                    .extract({ left: 0, top: 0, width: pageWidth, height: fallbackHeight })
+                    .toFile(headerImagePath);
+
+                logMatchStep(documentId, `generated fallback header image at ${headerImagePath}`);
+            } catch (fallbackError) {
+                await markMatchError(
+                    schedule,
+                    documentId,
+                    `Unable to generate fallback header image for ${headerImagePath}.`,
+                    fallbackError,
+                );
+                return;
+            }
+        }
+
+        if (!fs.existsSync(headerImagePath)) {
+            await markMatchError(schedule, documentId, `Header image was expected at ${headerImagePath} but could not be found even after fallback generation.`);
+            return;
+        }
+
         // 把Header添加到数组中
-        headerImagePaths.push(path.join(questionsDir, `${headerComponentId}.png`))
+        headerImagePaths.push(headerImagePath)
     }
 
     // 6. VLM识别姓名和学号
