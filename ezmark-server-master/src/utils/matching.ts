@@ -287,7 +287,22 @@ export async function startMatching(documentId: string) {
         return;
     }
     const headerComponentId = headerComponent.id;
-    logMatchStep(documentId, `found header component: id="${headerComponentId}"`);
+    const headerPageIndex = headerComponent.position?.pageIndex;
+    
+    // Validate header pageIndex
+    if (typeof headerPageIndex !== 'number' || !Number.isFinite(headerPageIndex) || headerPageIndex < 0) {
+        logMatchStep(documentId, `[HEADER WARNING] header component has invalid pageIndex (${headerPageIndex}), defaulting to page 0`);
+        if (headerComponent.position) {
+            headerComponent.position.pageIndex = 0;
+        } else {
+            logMatchStep(documentId, `[HEADER WARNING] header component has no position data, this will cause extraction to fail`);
+        }
+    } else if (headerPageIndex >= pagesPerExam) {
+        logMatchStep(documentId, `[HEADER WARNING] header pageIndex (${headerPageIndex}) is >= pagesPerExam (${pagesPerExam}), defaulting to page 0`);
+        headerComponent.position.pageIndex = 0;
+    }
+    
+    logMatchStep(documentId, `found header component: id="${headerComponentId}", pageIndex=${headerComponent.position?.pageIndex}`);
     
     const headerTasks: { diskPath: string; paperIndex: number }[] = [];
 
@@ -332,6 +347,7 @@ export async function startMatching(documentId: string) {
         let headerDiskPath: string | null = null;
         let headerRelativePath: string | null = null;
         let extractedComponentCount = 0;
+        let headerExtractionAttempted = false;
 
         // Extract component images from each page
         for (let pageOffset = 0; pageOffset < pagesPerExam; pageOffset++) {
@@ -362,16 +378,31 @@ export async function startMatching(documentId: string) {
             for (let compIndex = 0; compIndex < pageComponents.length; compIndex++) {
                 const comp = pageComponents[compIndex];
                 const rect = comp.position;
+                const isHeaderComponent = comp.id === headerComponentId;
+
+                if (isHeaderComponent) {
+                    headerExtractionAttempted = true;
+                }
 
                 if (!rect || !imageInfo.width || !imageInfo.height) {
-                    logMatchStep(documentId, `skipping component ${comp.id} on page ${pageOffset}: invalid position or image metadata`);
+                    const msg = `skipping component ${comp.id} on page ${pageOffset}: invalid position or image metadata`;
+                    if (isHeaderComponent) {
+                        logMatchStep(documentId, `[HEADER WARNING] ${msg} - rect=${!!rect}, imageInfo.width=${imageInfo.width}, imageInfo.height=${imageInfo.height}`);
+                    } else {
+                        logMatchStep(documentId, msg);
+                    }
                     continue;
                 }
 
                 const widthMm = Number(rect.width);
                 const heightMm = Number(rect.height);
                 if (!Number.isFinite(widthMm) || !Number.isFinite(heightMm) || widthMm <= 0 || heightMm <= 0) {
-                    logMatchStep(documentId, `skipping component ${comp.id} on page ${pageOffset}: invalid dimensions (${widthMm}×${heightMm}mm)`);
+                    const msg = `skipping component ${comp.id} on page ${pageOffset}: invalid dimensions (${widthMm}×${heightMm}mm)`;
+                    if (isHeaderComponent) {
+                        logMatchStep(documentId, `[HEADER WARNING] ${msg} - width=${rect.width}, height=${rect.height}`);
+                    } else {
+                        logMatchStep(documentId, msg);
+                    }
                     continue;
                 }
 
@@ -421,7 +452,20 @@ export async function startMatching(documentId: string) {
         }
 
         if (!headerDiskPath || !headerRelativePath) {
-            await markMatchError(schedule, documentId, `Unable to locate header image for paper ${paperId} (student ${studentIndex + 1}). Please ensure the exam definition contains a header component with valid positioning data.`);
+            const debugInfo = headerExtractionAttempted 
+                ? `Header component "${headerComponentId}" was found but extraction failed. Check logs for skipped component warnings.` 
+                : `Header component "${headerComponentId}" was not found on any page (0-${pagesPerExam-1}). Component may have invalid pageIndex.`;
+            
+            logMatchStep(documentId, `[HEADER ERROR] Paper ${paperId}: ${debugInfo}`);
+            
+            // Log all components with their pageIndex for debugging
+            const componentPageMap = components
+                .filter(c => c.id === headerComponentId)
+                .map(c => `id=${c.id}, pageIndex=${c.position?.pageIndex}, type=${c.type}`)
+                .join('; ');
+            logMatchStep(documentId, `[HEADER DEBUG] Header component info: ${componentPageMap || 'not found'}`);
+            
+            await markMatchError(schedule, documentId, `Unable to locate header image for paper ${paperId} (student ${studentIndex + 1}). ${debugInfo} Please ensure the exam definition contains a header component with valid positioning data.`);
             return;
         }
 
