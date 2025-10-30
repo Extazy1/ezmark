@@ -252,11 +252,21 @@ export async function uploadPDF(formData: FormData, examScheduleDocumentId: stri
 export async function startMatching(examScheduleDocumentId: string) {
     const response = await axiosInstance.post(`/schedules/${examScheduleDocumentId}/startMatching`);
     const result = await axiosInstance.get(`/schedules/${examScheduleDocumentId}`);
+    const currentResult = result.data.data.result;
+    let normalisedResult = currentResult;
+    if (typeof currentResult === "string") {
+        try {
+            normalisedResult = JSON.parse(currentResult);
+        } catch (error) {
+            console.error("Failed to parse schedule result", error);
+        }
+    }
     await axiosInstance.put(`/schedules/${examScheduleDocumentId}`, {
         data: {
             result: {
-                ...result.data.data.result,
-                progress: 'MATCH_START' // 开始匹配
+                ...normalisedResult,
+                progress: 'MATCH_START', // 开始匹配
+                error: null,
             }
         }
     });

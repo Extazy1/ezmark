@@ -1,7 +1,7 @@
 "use client"
 import { PipelineProps } from './interface';
 import { PipelineNavBar } from '../PipelineNavBar';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Class, ExamSchedule } from '@/types/types';
 import { getClassById, getExamScheduleById, startMatching } from '@/lib/api';
 import { Skeleton } from "@/components/ui/skeleton";
@@ -43,13 +43,13 @@ export default function Pipeline({ documentId, }: PipelineProps) {
 
     const handleStartPipeline = async () => {
         await startMatching(documentId);
-        setForceUpdate(!forceUpdate);
+        setForceUpdate((prev) => !prev);
     }
 
-    const updateSchedule = async () => {
+    const updateSchedule = useCallback(async () => {
         const schedule = await getExamScheduleById(documentId);
         setSchedule(schedule);
-    }
+    }, [documentId]);
 
     function renderContent() {
         switch (schedule?.result.progress) {
@@ -58,7 +58,7 @@ export default function Pipeline({ documentId, }: PipelineProps) {
             case 'UPLOADED':
                 return <Uploaded onStartPipeline={handleStartPipeline} />;
             case 'MATCH_START':
-                return <MatchStart updateSchedule={updateSchedule} />;
+                return <MatchStart schedule={schedule} updateSchedule={updateSchedule} />;
             case 'MATCH_DONE':
                 return classData ? <MatchDone setSchedule={setSchedule} schedule={schedule} classData={classData} /> : <div className="flex items-center justify-center h-full">Loading class data...</div>;
             case 'OBJECTIVE_START':

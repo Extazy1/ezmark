@@ -129,6 +129,12 @@ export interface ExamScheduleResult {
     studentPapers: StudentPaper[]; // 学生答卷,根据卷头信息匹配对应的paper
     matchResult: MatchResult;
     statistics: ExamStatistics;
+    error?: {
+        stage: string;
+        message: string;
+        details?: string;
+        timestamp?: string;
+    } | null;
 }
 
 // 试卷匹配结果

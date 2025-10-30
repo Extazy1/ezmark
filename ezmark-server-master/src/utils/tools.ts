@@ -17,19 +17,25 @@ export function imageToBase64(image: string) {
 }
 
 export function ensureScheduleResult(result: unknown): ExamScheduleResult {
+    let parsed: ExamScheduleResult;
+
     if (typeof result === "string") {
         try {
-            return JSON.parse(result) as ExamScheduleResult;
+            parsed = JSON.parse(result) as ExamScheduleResult;
         } catch (error) {
             throw new Error(`Failed to parse schedule result JSON: ${error instanceof Error ? error.message : String(error)}`);
         }
+    } else if (result && typeof result === "object") {
+        parsed = result as ExamScheduleResult;
+    } else {
+        throw new Error("Schedule result is missing or invalid");
     }
 
-    if (result && typeof result === "object") {
-        return result as ExamScheduleResult;
+    if (typeof parsed.error === "undefined") {
+        parsed.error = null;
     }
 
-    throw new Error("Schedule result is missing or invalid");
+    return parsed;
 }
 
 export function serialiseScheduleResult(result: ExamScheduleResult) {

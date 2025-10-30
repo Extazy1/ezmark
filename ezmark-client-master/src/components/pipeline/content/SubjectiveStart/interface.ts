@@ -1,3 +1,3 @@
 export interface SubjectiveStartProps {
-    updateSchedule: () => void;
+    updateSchedule: () => Promise<void>;
 }

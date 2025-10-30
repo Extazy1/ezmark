@@ -20,5 +20,6 @@ export const defaultScheduleResult: ExamScheduleResult = {
         median: -1,
         standardDeviation: -1,
         questions: []
-    }
+    },
+    error: null,
 }

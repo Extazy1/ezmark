@@ -1,3 +1,3 @@
 export interface ResultStartProps {
-    updateSchedule: () => void;
-} 
+    updateSchedule: () => Promise<void>;
+}

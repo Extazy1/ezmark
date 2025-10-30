@@ -21,38 +21,78 @@ async function getNanoid() {
     return nanoidGenerator;
 }
 
-export async function startMatching(documentId: string) {
-    // 1. 先通过documentId获得schedule
-    const scheduleData = await strapi.documents('api::schedule.schedule').findOne({
-        documentId,
-        populate: ['exam', 'class', 'teacher']
+const MATCH_STAGE = "MATCH";
+
+const normaliseUploadsPath = (url: string) => url.replace(/^\/+/, "");
+
+const isoTimestamp = () => new Date().toISOString();
+
+async function persistScheduleResult(schedule: ExamSchedule) {
+    await strapi.documents('api::schedule.schedule').update({
+        documentId: schedule.documentId,
+        data: {
+            result: serialiseScheduleResult(schedule.result),
+        },
     });
-    const schedule = scheduleData as unknown as ExamSchedule; // 强制将返回结果转换为ExamSchedule类型
-    schedule.result = ensureScheduleResult(schedule.result);
+}
 
-    if (schedule.result.progress !== 'MATCH_START') {
-        schedule.result.progress = 'MATCH_START';
-        await strapi.documents('api::schedule.schedule').update({
-            documentId: schedule.documentId,
-            data: {
-                result: serialiseScheduleResult(schedule.result),
-            },
+async function markMatchError(
+    schedule: ExamSchedule,
+    documentId: string,
+    message: string,
+    error?: unknown,
+) {
+    strapi.log.error(`startMatching(${documentId}): ${message}`, error instanceof Error ? error : undefined);
+    schedule.result.error = {
+        stage: MATCH_STAGE,
+        message,
+        details: error instanceof Error ? error.message : typeof error === "string" ? error : undefined,
+        timestamp: isoTimestamp(),
+    };
+    await persistScheduleResult(schedule);
+}
+
+export async function startMatching(documentId: string) {
+    let schedule: ExamSchedule | null = null;
+
+    try {
+        // 1. 先通过documentId获得schedule
+        const scheduleData = await strapi.documents('api::schedule.schedule').findOne({
+            documentId,
+            populate: ['exam', 'class', 'teacher']
         });
-    }
 
-    // 2. 拿到pdfId (从result属性中获取)
-    const pdfUrl = schedule.result.pdfUrl; // /uploads/exam_scan_732425fbd9.pdf
+        if (!scheduleData) {
+            strapi.log.error(`startMatching(${documentId}): schedule not found`);
+            return;
+        }
 
-    // 3. 通过pdfId直接从文件夹中获取pdf文件
-    const rootDir = process.cwd();
-    const pdfPath = path.join(rootDir, 'public', pdfUrl);
+        schedule = scheduleData as unknown as ExamSchedule; // 强制将返回结果转换为ExamSchedule类型
+        schedule.result = ensureScheduleResult(schedule.result);
 
-    // 4. 检查pdf文件是否存在
-    if (!fs.existsSync(pdfPath)) {
-        console.log('PDF file not found');
-        // TODO 设置progress为ERROR,并且设置一个message
-        return
-    }
+        if (schedule.result.progress !== 'MATCH_START') {
+            schedule.result.progress = 'MATCH_START';
+        }
+        schedule.result.error = null;
+        await persistScheduleResult(schedule);
+
+        // 2. 拿到pdfId (从result属性中获取)
+        const pdfUrl = schedule.result.pdfUrl?.trim(); // /uploads/exam_scan_732425fbd9.pdf
+
+        if (!pdfUrl) {
+            await markMatchError(schedule, documentId, 'PDF url is missing on the schedule result');
+            return;
+        }
+
+        // 3. 通过pdfId直接从文件夹中获取pdf文件
+        const rootDir = process.cwd();
+        const pdfPath = path.join(rootDir, 'public', normaliseUploadsPath(pdfUrl));
+
+        // 4. 检查pdf文件是否存在
+        if (!fs.existsSync(pdfPath)) {
+            await markMatchError(schedule, documentId, `PDF file not found at ${pdfPath}`);
+            return;
+        }
 
     // 5. 获得Exam, Class, Teacher数据
     const examData = await strapi.documents('api::exam.exam').findOne({
@@ -77,20 +117,20 @@ export async function startMatching(documentId: string) {
     const positionedPageIndices = components
         .map((component) => component.position?.pageIndex)
         .filter((pageIndex): pageIndex is number => typeof pageIndex === 'number' && Number.isFinite(pageIndex));
-    if (positionedPageIndices.length === 0) {
-        strapi.log.error(`startMatching(${documentId}): unable to determine exam page count because no component positions were found.`);
-        return;
-    }
+        if (positionedPageIndices.length === 0) {
+            await markMatchError(schedule, documentId, 'Unable to determine exam page count because no component positions were found.');
+            return;
+        }
     const pagesPerExam = Math.max(...positionedPageIndices) + 1;
     const totalPages = studentCount * pagesPerExam;
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
     const actualTotalPages = pdfDoc.getPageCount();
-    if (actualTotalPages !== totalPages) {
-        const msg = `The number of PDF pages does not equal (number of students * number of exam pages), please check if the PDF file is correct`;
-        // TODO 设置progress为ERROR,并且设置一个message
-        return;
-    }
+        if (actualTotalPages !== totalPages) {
+            const msg = `The number of PDF pages does not equal (number of students * number of exam pages), please check if the PDF file is correct`;
+            await markMatchError(schedule, documentId, msg);
+            return;
+        }
 
     // 5.2 把PDF转换成图片
     // 创建public/pipeline/{scheduleDocumentId}/all文件夹,保存PDF的所有图片
@@ -102,11 +142,11 @@ export async function startMatching(documentId: string) {
 
     // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
     const papers: Paper[] = [] // 保存所有试卷的id, startPage, endPage
-    const headerComponent = components.find(com => com.type === 'default-header');
-    if (!headerComponent) {
-        strapi.log.error(`startMatching(${documentId}): unable to locate header component in exam definition.`);
-        return;
-    }
+        const headerComponent = components.find(com => com.type === 'default-header');
+        if (!headerComponent) {
+            await markMatchError(schedule, documentId, 'Unable to locate header component in exam definition.');
+            return;
+        }
     const headerComponentId = headerComponent.id;
     const headerImagePaths = []
     const nanoid = await getNanoid();
@@ -232,14 +272,24 @@ export async function startMatching(documentId: string) {
         }
     };
 
-    schedule.result = updatedResult;
+        schedule.result = {
+            ...updatedResult,
+            error: null,
+        };
 
-    await strapi.documents('api::schedule.schedule').update({
-        documentId: schedule.documentId,
-        data: {
-            result: serialiseScheduleResult(updatedResult),
+        await persistScheduleResult(schedule);
+
+        // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
+    } catch (error) {
+        if (schedule) {
+            await markMatchError(
+                schedule,
+                documentId,
+                error instanceof Error ? error.message : 'Unknown matching error',
+                error,
+            );
+        } else {
+            strapi.log.error(`startMatching(${documentId}) failed before schedule initialisation`, error);
         }
-    });
-
-    // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
+    }
 }
