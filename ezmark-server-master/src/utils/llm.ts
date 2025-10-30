@@ -38,6 +38,60 @@ const llmLogger = {
     }
 };
 
+const CODE_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/i;
+
+const extractJsonPayload = (raw: string): string | undefined => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+
+    const codeFenceMatch = trimmed.match(CODE_BLOCK_REGEX);
+    if (codeFenceMatch) {
+        return codeFenceMatch[1]?.trim() || undefined;
+    }
+
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        return trimmed;
+    }
+
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        return trimmed.slice(firstBrace, lastBrace + 1).trim();
+    }
+
+    return undefined;
+};
+
+const normalizeHeaderPayload = (payload: unknown): unknown => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return payload;
+    }
+
+    const record = payload as Record<string, unknown>;
+    const normalized: Record<string, unknown> = { ...record };
+
+    for (const [key, value] of Object.entries(record)) {
+        const simplifiedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+        switch (simplifiedKey) {
+            case "studentid":
+                normalized.studentId = value;
+                break;
+            case "name":
+                normalized.name = value;
+                break;
+            case "reason":
+                normalized.reason = value;
+                break;
+            default:
+                break;
+        }
+    }
+
+    return normalized;
+};
+
 type RecognizeHeaderOptions = {
     scheduleId?: string;
     headerIndex?: number;
@@ -319,21 +373,29 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         });
 
         try {
-            const parsedContent: unknown = typeof content === "string" && content.trim().length > 0
-                ? JSON.parse(content)
-                : {};
-            const headerData = HeaderSchema.parse(parsedContent);
+            let parsedContent: unknown = {};
+            if (typeof content === "string" && content.trim().length > 0) {
+                const payload = extractJsonPayload(content);
+                const candidate = payload ?? content;
+                parsedContent = JSON.parse(candidate);
+            }
+
+            const normalizedContent = normalizeHeaderPayload(parsedContent);
+            const headerData = HeaderSchema.parse(normalizedContent);
             return {
                 name: headerData.name,
                 studentId: headerData.studentId,
             } satisfies Header;
         } catch (parseError) {
+            const previewContent = typeof content === "string"
+                ? (extractJsonPayload(content) ?? content)
+                : undefined;
             llmLogger.error("[llm] failed to parse header recognition response", parseError, {
                 scheduleId: options.scheduleId,
                 header: label,
                 provider,
                 model,
-                preview: content?.slice(0, 200)
+                preview: previewContent?.slice(0, 200)
             });
             return {
                 name: 'Unknown',
