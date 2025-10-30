@@ -147,6 +147,7 @@ export interface MatchResult {
         papers: {
             paperId: string;
             headerImgUrl: string;
+            reason?: string;
         }[]
     }
     done: boolean;
@@ -160,6 +161,10 @@ export interface Paper {
     studentId: string; // 学生id
     studentDocumentId: string; // 学生documentId
     headerImgUrl: string; // 试卷头图片url
+    headerRecognitionError?: {
+        message: string;
+        details?: string;
+    } | null;
 }
 
 export interface StudentPaper {

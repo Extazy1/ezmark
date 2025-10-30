@@ -9,6 +9,7 @@ import { ExamResponse } from "../../types/exam";
 import pdf2png from "./pdf2png";
 import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
 import { recognizeHeader, LLMRequestError } from "./llm";
+import type { Header } from "./schema";
 
 const PADDING = 10;
 
@@ -338,20 +339,54 @@ export async function startMatching(documentId: string) {
     console.log(`Start recognizing header... for schedule ${schedule.documentId}`)
     logMatchStep(documentId, `recognising ${headerImagePaths.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
     const scheduleId = schedule.documentId;
-    const headerResults = await Promise.all(headerImagePaths.map(async (path, index) => {
+    const headerResults: Header[] = [];
+    const headerFailures: Array<{ index: number; path: string; message: string; details?: string }> = [];
+
+    for (let index = 0; index < headerImagePaths.length; index++) {
+        const path = headerImagePaths[index];
         try {
             const header = await recognizeHeader(path, {
                 scheduleId,
                 headerIndex: index,
                 totalHeaders: headerImagePaths.length,
             });
-            return header;
+            headerResults.push(header);
         } catch (error) {
-            strapi.log.error(`startMatching(${documentId}): header recognition failed for ${path}`, error instanceof Error ? error : undefined);
-            throw error;
+            const message = error instanceof Error ? error.message : 'Unknown header recognition error';
+            const details = error instanceof LLMRequestError ? JSON.stringify(error.meta) : undefined;
+
+            strapi.log.error(
+                `startMatching(${documentId}): header recognition failed for ${path}`,
+                error instanceof Error ? error : undefined,
+            );
+
+            headerFailures.push({ index, path, message, details });
+
+            const placeholder: Header = {
+                name: 'Unknown',
+                studentId: '',
+            };
+
+            headerResults.push(placeholder);
+
+            if (papers[index]) {
+                papers[index].headerRecognitionError = {
+                    message,
+                    details,
+                };
+            }
         }
-    }));
-    logMatchStep(documentId, `header recognition completed for ${headerResults.length} papers`);
+    }
+
+    if (headerFailures.length > 0) {
+        logMatchStep(
+            documentId,
+            `header recognition completed with ${headerFailures.length} failure(s); affected papers will remain unmatched until manually resolved`,
+        );
+    } else {
+        logMatchStep(documentId, `header recognition completed for ${headerResults.length} papers`);
+    }
+
     console.log(headerResults)
     console.log(`End recognizing header... for schedule ${schedule.documentId}`)
 
@@ -360,6 +395,9 @@ export async function startMatching(documentId: string) {
         paper.name = headerResults[index].name;
         paper.studentId = headerResults[index].studentId;
         paper.headerImgUrl = path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+        if (!paper.name && paper.headerRecognitionError?.message) {
+            paper.name = 'Unknown';
+        }
     });
 
     // 7. 和students和papers进行比对和关联
@@ -405,7 +443,8 @@ export async function startMatching(documentId: string) {
                 studentIds: unmatchedStudents.map(student => student.studentId),
                 papers: unmatchedPapers.map(paper => ({
                     paperId: paper.paperId,
-                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`),
+                    reason: paper.headerRecognitionError?.message ?? undefined,
                 }))
             },
             done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
