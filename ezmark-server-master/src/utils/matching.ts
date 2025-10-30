@@ -1,25 +1,17 @@
 import path from "path";
-import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
-import fs from 'fs';
-import { ExamResponse } from "../../types/exam";
-import { PDFDocument } from "pdf-lib";
-import pdf2png from "./pdf2png";
+import fs from "fs";
+import { randomBytes } from "crypto";
 import sharp from "sharp";
+import { PDFDocument } from "pdf-lib";
+import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
+import { ExamResponse } from "../../types/exam";
+import pdf2png from "./pdf2png";
 import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
 import { recognizeHeader, LLMRequestError } from "./llm";
 
 const PADDING = 10;
 
-// 启动一个异步任务，专门处理流水线
-let nanoidGenerator: (() => string) | null = null;
-
-async function getNanoid() {
-    if (!nanoidGenerator) {
-        const { nanoid } = await import('nanoid');
-        nanoidGenerator = nanoid;
-    }
-    return nanoidGenerator;
-}
+const createPaperId = () => randomBytes(8).toString("hex");
 
 const MATCH_STAGE = "MATCH";
 
@@ -214,17 +206,16 @@ export async function startMatching(documentId: string) {
     logMatchStep(documentId, "PDF conversion complete");
 
     // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
-    const papers: Paper[] = [] // 保存所有试卷的id, startPage, endPage
-        const headerComponent = components.find(com => com.type === 'default-header');
-        if (!headerComponent) {
-            await markMatchError(schedule, documentId, 'Unable to locate header component in exam definition.');
-            return;
-        }
+    const papers: Paper[] = []; // 保存所有试卷的id, startPage, endPage
+    const headerComponent = components.find(com => com.type === "default-header");
+    if (!headerComponent) {
+        await markMatchError(schedule, documentId, "Unable to locate header component in exam definition.");
+        return;
+    }
     const headerComponentId = headerComponent.id;
-    const headerImagePaths = []
-    const nanoid = await getNanoid();
+    const headerImagePaths: string[] = [];
     for (let i = 0; i < studentCount; i++) {
-        const paperId = nanoid()
+        const paperId = createPaperId();
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
         if (!fs.existsSync(paperDir)) {
             fs.mkdirSync(paperDir, { recursive: true });
