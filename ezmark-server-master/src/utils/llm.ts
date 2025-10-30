@@ -1,6 +1,5 @@
 import "dotenv/config";
 import fs from "node:fs";
-import path from "node:path";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { HEADER_PROMPT, MCQ_PROMPT, SUBJECTIVE_PROMPT } from "./prompt";
@@ -36,60 +35,6 @@ const llmLogger = {
             console.error(message, meta ?? "", error);
         }
     }
-};
-
-const CODE_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-
-const extractJsonPayload = (raw: string): string | undefined => {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-        return undefined;
-    }
-
-    const codeFenceMatch = trimmed.match(CODE_BLOCK_REGEX);
-    if (codeFenceMatch) {
-        return codeFenceMatch[1]?.trim() || undefined;
-    }
-
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-        return trimmed;
-    }
-
-    const firstBrace = trimmed.indexOf("{");
-    const lastBrace = trimmed.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        return trimmed.slice(firstBrace, lastBrace + 1).trim();
-    }
-
-    return undefined;
-};
-
-const normalizeHeaderPayload = (payload: unknown): unknown => {
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-        return payload;
-    }
-
-    const record = payload as Record<string, unknown>;
-    const normalized: Record<string, unknown> = { ...record };
-
-    for (const [key, value] of Object.entries(record)) {
-        const simplifiedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
-        switch (simplifiedKey) {
-            case "studentid":
-                normalized.studentId = value;
-                break;
-            case "name":
-                normalized.name = value;
-                break;
-            case "reason":
-                normalized.reason = value;
-                break;
-            default:
-                break;
-        }
-    }
-
-    return normalized;
 };
 
 type RecognizeHeaderOptions = {
@@ -228,41 +173,14 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         : `${(options.headerIndex ?? 0) + 1}`;
 
     if (!fs.existsSync(imagePath)) {
-        const dirPath = path.dirname(imagePath);
-        const meta: Record<string, unknown> = {
+        const meta = {
             scheduleId: options.scheduleId,
             imagePath,
             provider,
             model,
             modelSource,
             header: label,
-            directory: dirPath,
         };
-
-        try {
-            const dirExists = fs.existsSync(dirPath);
-            meta.directoryExists = dirExists;
-            if (dirExists) {
-                try {
-                    const entries = fs.readdirSync(dirPath);
-                    meta.directorySample = entries.slice(0, 20);
-                    meta.directoryCount = entries.length;
-                } catch (readError) {
-                    meta.directoryReadError = readError instanceof Error ? readError.message : String(readError);
-                }
-            }
-        } catch (dirError) {
-            meta.directoryCheckError = dirError instanceof Error ? dirError.message : String(dirError);
-        }
-
-        try {
-            fs.accessSync(dirPath, fs.constants.W_OK);
-            meta.directoryWritable = true;
-        } catch (accessError) {
-            meta.directoryWritable = false;
-            meta.directoryAccessError = accessError instanceof Error ? accessError.message : String(accessError);
-        }
-
         llmLogger.error("[llm] header image file missing", undefined, meta);
         throw new LLMRequestError("Header image file not found", meta);
     }
@@ -305,24 +223,22 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             },
         ];
 
+        const qwenContent = [
+            {
+                type: "input_text",
+                text: HEADER_PROMPT,
+            },
+            {
+                type: "input_image",
+                image_url: `data:image/png;base64,${base64Image}`,
+            },
+        ];
+
         const request: ChatCompletionCreateParamsNonStreaming = {
             model,
             messages: [] as unknown as ChatCompletionCreateParamsNonStreaming["messages"],
             stream: false,
         };
-
-        const qwenContent = [
-            {
-                type: "text",
-                text: HEADER_PROMPT,
-            },
-            {
-                type: "image_url",
-                image_url: {
-                    url: `data:image/png;base64,${base64Image}`,
-                },
-            },
-        ] as ChatCompletionCreateParamsNonStreaming["messages"][number]["content"];
 
         const message = provider === "openai"
             ? { role: "user", content: openaiContent }
@@ -373,29 +289,21 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         });
 
         try {
-            let parsedContent: unknown = {};
-            if (typeof content === "string" && content.trim().length > 0) {
-                const payload = extractJsonPayload(content);
-                const candidate = payload ?? content;
-                parsedContent = JSON.parse(candidate);
-            }
-
-            const normalizedContent = normalizeHeaderPayload(parsedContent);
-            const headerData = HeaderSchema.parse(normalizedContent);
+            const parsedContent: unknown = typeof content === "string" && content.trim().length > 0
+                ? JSON.parse(content)
+                : {};
+            const headerData = HeaderSchema.parse(parsedContent);
             return {
                 name: headerData.name,
                 studentId: headerData.studentId,
             } satisfies Header;
         } catch (parseError) {
-            const previewContent = typeof content === "string"
-                ? (extractJsonPayload(content) ?? content)
-                : undefined;
             llmLogger.error("[llm] failed to parse header recognition response", parseError, {
                 scheduleId: options.scheduleId,
                 header: label,
                 provider,
                 model,
-                preview: previewContent?.slice(0, 200)
+                preview: content?.slice(0, 200)
             });
             return {
                 name: 'Unknown',

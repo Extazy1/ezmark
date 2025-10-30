@@ -2,28 +2,18 @@ import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
 import sharp from "sharp";
-import type { Metadata } from "sharp";
 import { PDFDocument } from "pdf-lib";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
-import { ExamResponse, UnionComponent } from "../../types/exam";
+import { ExamResponse } from "../../types/exam";
 import pdf2png from "./pdf2png";
-import {
-    QUESTION_CROP_PADDING,
-    computeNextComponentTopMap,
-    ensureScheduleResult,
-    getComponentCropBox,
-    mmToPixels,
-    serialiseScheduleResult,
-    toFiniteNumber,
-} from "./tools";
+import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
 import { recognizeHeader, LLMRequestError } from "./llm";
-import type { Header } from "./schema";
+
+const PADDING = 10;
 
 const createPaperId = () => randomBytes(8).toString("hex");
 
 const MATCH_STAGE = "MATCH";
-
-const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
 
 const normaliseUploadsPath = (rawUrl: string) => {
     if (!rawUrl) {
@@ -156,13 +146,10 @@ export async function startMatching(documentId: string) {
     // 5. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
     // 5.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
     const studentCount = classData.students.length;
-    const components: UnionComponent[] = Array.isArray(exam.examData?.components)
-        ? (exam.examData.components as UnionComponent[])
-        : [];
-    const nextComponentTopMap = computeNextComponentTopMap(components);
+    const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
     const positionedPageIndices = components
-        .map((component) => toFiniteNumber(component.position?.pageIndex))
-        .filter((pageIndex): pageIndex is number => pageIndex !== null);
+        .map((component) => component.position?.pageIndex)
+        .filter((pageIndex): pageIndex is number => typeof pageIndex === 'number' && Number.isFinite(pageIndex));
 
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
@@ -227,33 +214,18 @@ export async function startMatching(documentId: string) {
     }
     const headerComponentId = headerComponent.id;
     const headerImagePaths: string[] = [];
-    const allImages = fs.readdirSync(allImagesDir).sort((a, b) => {
-        const matchA = a.match(/(\d+)/);
-        const matchB = b.match(/(\d+)/);
-        if (matchA && matchB) {
-            return Number(matchA[1]) - Number(matchB[1]);
-        }
-        return a.localeCompare(b);
-    });
-    for (let studentIndex = 0; studentIndex < studentCount; studentIndex++) {
+    for (let i = 0; i < studentCount; i++) {
         const paperId = createPaperId();
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
         if (!fs.existsSync(paperDir)) {
             fs.mkdirSync(paperDir, { recursive: true });
         }
         // 计算页面范围
-        const startPage = studentIndex * pagesPerExam;
+        const startPage = i * pagesPerExam;
         const endPage = startPage + pagesPerExam;
         // 根据页面范围，从allImagesDir中获取图片
-        const imagesInRange = allImages.slice(startPage, endPage);
-        if (imagesInRange.length !== pagesPerExam) {
-            await markMatchError(
-                schedule,
-                documentId,
-                `Expected ${pagesPerExam} pages for paper ${paperId} but found ${imagesInRange.length}. Please verify the generated pipeline images.`,
-            );
-            return;
-        }
+        const images = fs.readdirSync(allImagesDir);
+        const imagesInRange = images.slice(startPage, endPage);
         // 将图片保存到paperDir中
         imagesInRange.forEach((image, index) => {
             fs.copyFileSync(path.join(allImagesDir, image), path.join(paperDir, `page-${index}.png`));
@@ -267,109 +239,32 @@ export async function startMatching(documentId: string) {
             fs.mkdirSync(questionsDir, { recursive: true });
         }
 
-        let firstPageInfo: Metadata | null = null;
-
         // 循环处理每一页
-        for (let pageIndex = 0; pageIndex < pagesPerExam; pageIndex++) {
-            const imgPath = path.join(paperDir, `page-${pageIndex}.png`);
+        for (let i = 0; i < pagesPerExam; i++) {
+            const imgPath = path.join(paperDir, `page-${i}.png`);
             // 加载当前页图片
             const image = sharp(imgPath);
             const imageInfo = await image.metadata();
-            if (pageIndex === 0) {
-                firstPageInfo = imageInfo;
-            }
             // 过滤出当前页面的组件
-            const pageComponents = components.filter(com => {
-                const componentPageIndex = toFiniteNumber(com.position?.pageIndex);
-                return componentPageIndex === pageIndex;
-            }).sort((a, b) => {
-                const topA = toFiniteNumber(a.position?.top) ?? 0;
-                const topB = toFiniteNumber(b.position?.top) ?? 0;
-
-                if (topA !== topB) {
-                    return topA - topB;
-                }
-
-                const leftA = toFiniteNumber(a.position?.left) ?? 0;
-                const leftB = toFiniteNumber(b.position?.left) ?? 0;
-
-                if (leftA !== leftB) {
-                    return leftA - leftB;
-                }
-
-                return a.id.localeCompare(b.id);
-            });
-            console.log(`page-${pageIndex} has ${pageComponents.length} components`)
+            const pageComponents = exam.examData.components.filter(com => com.position?.pageIndex === i);
+            console.log(`page-${i} has ${pageComponents.length} components`)
             // 循环处理每个组件
             for (let compIndex = 0; compIndex < pageComponents.length; compIndex++) {
                 const comp = pageComponents[compIndex];
                 const rect = comp.position;
-                if (!rect) {
-                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} missing position data on page ${pageIndex}`);
-                    continue;
-                }
                 const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
-                const nextTopMm = nextComponentTopMap.get(comp.id) ?? null;
-                const cropBox = getComponentCropBox({
-                    position: rect,
-                    metadata: imageInfo,
-                    nextTopMm,
-                    padding: QUESTION_CROP_PADDING,
-                });
-
-                if (!cropBox) {
-                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has invalid crop geometry on page ${pageIndex}`);
-                    continue;
-                }
-
+                // 将毫米转换为像素
+                const left = 0;
+                const top = Math.max(mmToPixels(rect.top, imageInfo) - PADDING, 0);
+                const width = imageInfo.width!;
+                const height = mmToPixels(rect.height, imageInfo) + PADDING * 2;
                 // 裁剪图片
-                await image.clone().extract(cropBox).toFile(outputFilePath);
+                await image.clone().extract({ left, top, width, height }).toFile(outputFilePath);
             }
-        }
-
-        const headerImagePath = path.join(questionsDir, `${headerComponentId}.png`);
-        if (!fs.existsSync(headerImagePath)) {
-            const fallbackSource = path.join(paperDir, 'page-0.png');
-            if (!fs.existsSync(fallbackSource)) {
-                await markMatchError(schedule, documentId, `Unable to generate header image because ${fallbackSource} is missing.`);
-                return;
-            }
-
-            try {
-                if (!firstPageInfo) {
-                    firstPageInfo = await sharp(fallbackSource).metadata();
-                }
-                const pageWidth = firstPageInfo.width ?? 0;
-                const pageHeight = firstPageInfo.height ?? 0;
-                const fallbackHeight = Math.max(Math.round(pageHeight * 0.25), 1);
-
-                if (!pageWidth || !pageHeight) {
-                    throw new Error(`invalid fallback dimensions (width=${pageWidth}, height=${pageHeight})`);
-                }
-
-                await sharp(fallbackSource)
-                    .extract({ left: 0, top: 0, width: pageWidth, height: fallbackHeight })
-                    .toFile(headerImagePath);
-
-                logMatchStep(documentId, `generated fallback header image at ${headerImagePath}`);
-            } catch (fallbackError) {
-                await markMatchError(
-                    schedule,
-                    documentId,
-                    `Unable to generate fallback header image for ${headerImagePath}.`,
-                    fallbackError,
-                );
-                return;
-            }
-        }
-
-        if (!fs.existsSync(headerImagePath)) {
-            await markMatchError(schedule, documentId, `Header image was expected at ${headerImagePath} but could not be found even after fallback generation.`);
-            return;
         }
 
         // 把Header添加到数组中
-        headerImagePaths.push(headerImagePath)
+        headerImagePaths.push(path.join(questionsDir, `${headerComponentId}.png`))
     }
 
     // 6. VLM识别姓名和学号
@@ -377,54 +272,20 @@ export async function startMatching(documentId: string) {
     console.log(`Start recognizing header... for schedule ${schedule.documentId}`)
     logMatchStep(documentId, `recognising ${headerImagePaths.length} headers with ${process.env.MATCHING_MODEL_NAME ?? "configured model"}`);
     const scheduleId = schedule.documentId;
-    const headerResults: Header[] = [];
-    const headerFailures: Array<{ index: number; path: string; message: string; details?: string }> = [];
-
-    for (let index = 0; index < headerImagePaths.length; index++) {
-        const path = headerImagePaths[index];
+    const headerResults = await Promise.all(headerImagePaths.map(async (path, index) => {
         try {
             const header = await recognizeHeader(path, {
                 scheduleId,
                 headerIndex: index,
                 totalHeaders: headerImagePaths.length,
             });
-            headerResults.push(header);
+            return header;
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown header recognition error';
-            const details = error instanceof LLMRequestError ? JSON.stringify(error.meta) : undefined;
-
-            strapi.log.error(
-                `startMatching(${documentId}): header recognition failed for ${path}`,
-                error instanceof Error ? error : undefined,
-            );
-
-            headerFailures.push({ index, path, message, details });
-
-            const placeholder: Header = {
-                name: 'Unknown',
-                studentId: '',
-            };
-
-            headerResults.push(placeholder);
-
-            if (papers[index]) {
-                papers[index].headerRecognitionError = {
-                    message,
-                    details,
-                };
-            }
+            strapi.log.error(`startMatching(${documentId}): header recognition failed for ${path}`, error instanceof Error ? error : undefined);
+            throw error;
         }
-    }
-
-    if (headerFailures.length > 0) {
-        logMatchStep(
-            documentId,
-            `header recognition completed with ${headerFailures.length} failure(s); affected papers will remain unmatched until manually resolved`,
-        );
-    } else {
-        logMatchStep(documentId, `header recognition completed for ${headerResults.length} papers`);
-    }
-
+    }));
+    logMatchStep(documentId, `header recognition completed for ${headerResults.length} papers`);
     console.log(headerResults)
     console.log(`End recognizing header... for schedule ${schedule.documentId}`)
 
@@ -432,10 +293,7 @@ export async function startMatching(documentId: string) {
     papers.forEach((paper, index) => {
         paper.name = headerResults[index].name;
         paper.studentId = headerResults[index].studentId;
-        paper.headerImgUrl = joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
-        if (!paper.name && paper.headerRecognitionError?.message) {
-            paper.name = 'Unknown';
-        }
+        paper.headerImgUrl = path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
     });
 
     // 7. 和students和papers进行比对和关联
@@ -475,61 +333,27 @@ export async function startMatching(documentId: string) {
             matched: matchedPairs.map(pair => ({
                 studentId: pair.student.studentId,
                 paperId: pair.paper.paperId,
-                headerImgUrl: joinPipelineUrl('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
+                headerImgUrl: path.join('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
             })),
             unmatched: {
                 studentIds: unmatchedStudents.map(student => student.studentId),
                 papers: unmatchedPapers.map(paper => ({
                     paperId: paper.paperId,
-                    headerImgUrl: joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`),
-                    reason: paper.headerRecognitionError?.message ?? undefined,
+                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
                 }))
             },
             done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
         }
     };
 
-    schedule.result = {
-        ...updatedResult,
-        error: null,
-    };
-
-    const requiredMatches = Math.min(2, studentCount);
-    if (matchedPairs.length < requiredMatches) {
-        const failureSummary = {
-            matchedCount: matchedPairs.length,
-            requiredMatches,
-            studentCount,
-            headerFailures: headerFailures.map((failure) => ({
-                index: failure.index,
-                path: failure.path,
-                message: failure.message,
-                details: failure.details,
-            })),
-            unmatchedStudentIds: unmatchedStudents.map((student) => student.studentId),
-            unmatchedPaperIds: unmatchedPapers.map((paper) => paper.paperId),
+        schedule.result = {
+            ...updatedResult,
+            error: null,
         };
 
-        const failureMessage = `Only ${matchedPairs.length} of ${studentCount} papers matched; at least ${requiredMatches} successful matches are required to continue.`;
+        await persistScheduleResult(schedule);
 
-        await markMatchError(
-            schedule,
-            documentId,
-            failureMessage,
-            new Error(JSON.stringify(failureSummary, null, 2)),
-        );
-
-        logMatchStep(
-            documentId,
-            "matching aborted because the minimum successful match threshold was not met",
-        );
-
-        return;
-    }
-
-    await persistScheduleResult(schedule);
-
-    logMatchStep(documentId, "matching completed successfully");
+        logMatchStep(documentId, "matching completed successfully");
 
         // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
     } catch (error) {

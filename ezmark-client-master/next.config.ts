@@ -43,10 +43,6 @@ const nextConfig: NextConfig = {
         source: "/strapi/pdf/:path*",
         destination: `${INTERNAL_STRAPI_ORIGIN}/pdf/:path*`,
       },
-      {
-        source: "/strapi/pipeline/:path*",
-        destination: `${INTERNAL_STRAPI_ORIGIN}/pipeline/:path*`,
-      },
     ];
   },
 };

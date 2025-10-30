@@ -1,90 +1,8 @@
-import fs from "fs";
 import path from "path";
-import sharp from "sharp";
-import type { Metadata } from "sharp";
 import { Exam, MultipleChoiceQuestionData, QuestionType, UnionComponent } from "../../types/exam";
 import { ExamSchedule } from "../../types/type";
 import { recognizeMCQ } from "./llm";
-import {
-    QUESTION_CROP_PADDING,
-    computeNextComponentTopMap,
-    ensureScheduleResult,
-    getComponentCropBox,
-    serialiseScheduleResult,
-    toFiniteNumber,
-} from "./tools";
-
-const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
-
-type QuestionPosition = UnionComponent["position"];
-
-async function ensureQuestionImage(options: {
-    publicDir: string;
-    scheduleId: string;
-    paperId: string;
-    questionId: string;
-    position?: QuestionPosition;
-    nextTopMm?: number | null;
-}) {
-    const { publicDir, scheduleId, paperId, questionId, position, nextTopMm } = options;
-    const questionDir = path.join(publicDir, 'pipeline', scheduleId, paperId, 'questions');
-    const questionPath = path.join(questionDir, `${questionId}.png`);
-
-    if (fs.existsSync(questionPath)) {
-        return questionPath;
-    }
-
-    const pageIndex = toFiniteNumber(position?.pageIndex) ?? 0;
-    const pagePath = path.join(publicDir, 'pipeline', scheduleId, paperId, `page-${pageIndex}.png`);
-
-    if (!fs.existsSync(pagePath)) {
-        strapi.log.warn(`startObjective(${scheduleId}): page image missing for paper ${paperId}, expected ${pagePath}`);
-        return null;
-    }
-
-    try {
-        fs.mkdirSync(questionDir, { recursive: true });
-    } catch (dirError) {
-        strapi.log.error(`startObjective(${scheduleId}): failed to prepare question directory ${questionDir}`, dirError);
-        return null;
-    }
-
-    try {
-        const pageImage = sharp(pagePath);
-        const metadata: Metadata = await pageImage.metadata();
-        const width = metadata.width ?? 0;
-        const height = metadata.height ?? 0;
-
-        if (!width || !height) {
-            strapi.log.warn(`startObjective(${scheduleId}): invalid metadata for page ${pagePath} (width=${width}, height=${height})`);
-            return null;
-        }
-
-        const output = pageImage.clone();
-
-        const cropBox = position
-            ? getComponentCropBox({
-                position,
-                metadata,
-                nextTopMm,
-                padding: QUESTION_CROP_PADDING,
-            })
-            : null;
-
-        if (cropBox) {
-            await output.extract(cropBox).toFile(questionPath);
-            strapi.log.info(`startObjective(${scheduleId}): regenerated missing question ${questionId} for paper ${paperId} on page ${pageIndex}`);
-        } else {
-            await output.toFile(questionPath);
-            strapi.log.warn(`startObjective(${scheduleId}): regenerated question ${questionId} for paper ${paperId} using full page ${pageIndex} due to missing position data`);
-        }
-
-        return questionPath;
-    } catch (error) {
-        strapi.log.error(`startObjective(${scheduleId}): failed to regenerate question ${questionId} for paper ${paperId}`, error);
-        return null;
-    }
-}
+import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
 export async function startObjective(documentId: string) {
     // 1. 先通过documentId获得schedule
@@ -140,30 +58,19 @@ export async function startObjective(documentId: string) {
 
     // 5. 收集所有的客观题
     const examData = schedule.exam.examData as Exam;
-    const allComponents: UnionComponent[] = Array.isArray(examData.components)
-        ? examData.components
-        : [];
-    const objectiveQuestions = allComponents.filter((question) =>
-        OBJECTIVE_TYPES.includes(question.type as QuestionType),
-    );
-
-    const nextComponentTopMap = computeNextComponentTopMap(allComponents);
+    const objectiveQuestions: UnionComponent[] = []
+    for (const question of examData.components) {
+        if (OBJECTIVE_TYPES.includes(question.type as QuestionType)) {
+            objectiveQuestions.push(question)
+        }
+    }
 
     // 6. 一次性发送所有学生的所有客观题答案图片的请求
     const rootDir = process.cwd();
     const publicDir = path.join(rootDir, 'public');
 
     // 6.1 收集所有学生的所有答案图片
-    type StudentAnswerTask = {
-        studentId: string;
-        paperId: string;
-        questionId: string;
-        answerImage: string;
-        position?: QuestionPosition;
-        nextTopMm?: number | null;
-    };
-
-    const allStudentAnswers: StudentAnswerTask[] = [];
+    const allStudentAnswers = [];
     for (const question of objectiveQuestions) {
         const questionId = question.id;
         schedule.result.papers.forEach((paper) => {
@@ -171,9 +78,7 @@ export async function startObjective(documentId: string) {
                 studentId: paper.studentId,
                 paperId: paper.paperId,
                 questionId: questionId,
-                answerImage: joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`),
-                position: question.position,
-                nextTopMm: nextComponentTopMap.get(question.id) ?? null,
+                answerImage: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`)
             });
         });
     }
@@ -181,36 +86,12 @@ export async function startObjective(documentId: string) {
     // 6.2 一次性发送所有请求
     console.log(`LLM starts to process all MCQ answers, there are ${allStudentAnswers.length} answers`);
     const allLlmResults = await Promise.all(allStudentAnswers.map(async (studentAnswer) => {
-        const ensuredPath = await ensureQuestionImage({
-            publicDir,
-            scheduleId: schedule.documentId,
-            paperId: studentAnswer.paperId,
-            questionId: studentAnswer.questionId,
-            position: studentAnswer.position,
-            nextTopMm: studentAnswer.nextTopMm,
-        });
-
-        if (!ensuredPath) {
-            strapi.log.error(`startObjective(${schedule.documentId}): missing answer image for question ${studentAnswer.questionId} on paper ${studentAnswer.paperId}`);
-            return {
-                ...studentAnswer,
-                result: { answer: ['Unknown'] },
-            };
-        }
-
-        try {
-            const answer = await recognizeMCQ(ensuredPath);
-            return {
-                ...studentAnswer,
-                result: answer
-            };
-        } catch (error) {
-            strapi.log.error(`startObjective(${schedule.documentId}): LLM recognition failed for question ${studentAnswer.questionId} on paper ${studentAnswer.paperId}`, error);
-            return {
-                ...studentAnswer,
-                result: { answer: ['Unknown'] },
-            };
-        }
+        const imagePath = path.join(publicDir, studentAnswer.answerImage);
+        const answer = await recognizeMCQ(imagePath);
+        return {
+            ...studentAnswer,
+            result: answer
+        };
     }));
     console.log(`All LLM requests have been processed`);
 
