@@ -289,20 +289,32 @@ export async function startMatching(documentId: string) {
     const headerComponentId = headerComponent.id;
     const headerPageIndex = headerComponent.position?.pageIndex;
     
-    // Validate header pageIndex
-    if (typeof headerPageIndex !== 'number' || !Number.isFinite(headerPageIndex) || headerPageIndex < 0) {
+    // Ensure header has valid position data - create if missing or fix if invalid
+    if (!headerComponent.position) {
+        logMatchStep(documentId, `[HEADER WARNING] header component has no position data, creating default position at page 0`);
+        headerComponent.position = {
+            pageIndex: 0,
+            top: 0,
+            left: 0,
+            width: 210,  // A4 width in mm
+            height: 60,  // Approximate header height
+        };
+    } else if (typeof headerPageIndex !== 'number' || !Number.isFinite(headerPageIndex) || headerPageIndex < 0) {
         logMatchStep(documentId, `[HEADER WARNING] header component has invalid pageIndex (${headerPageIndex}), defaulting to page 0`);
-        if (headerComponent.position) {
-            headerComponent.position.pageIndex = 0;
-        } else {
-            logMatchStep(documentId, `[HEADER WARNING] header component has no position data, this will cause extraction to fail`);
-        }
+        headerComponent.position.pageIndex = 0;
     } else if (headerPageIndex >= pagesPerExam) {
         logMatchStep(documentId, `[HEADER WARNING] header pageIndex (${headerPageIndex}) is >= pagesPerExam (${pagesPerExam}), defaulting to page 0`);
         headerComponent.position.pageIndex = 0;
     }
     
-    logMatchStep(documentId, `found header component: id="${headerComponentId}", pageIndex=${headerComponent.position?.pageIndex}`);
+    // Validate position dimensions
+    if (!headerComponent.position.width || !headerComponent.position.height) {
+        logMatchStep(documentId, `[HEADER WARNING] header position missing dimensions, setting defaults (width: 210mm, height: 60mm)`);
+        headerComponent.position.width = headerComponent.position.width || 210;
+        headerComponent.position.height = headerComponent.position.height || 60;
+    }
+    
+    logMatchStep(documentId, `found header component: id="${headerComponentId}", pageIndex=${headerComponent.position.pageIndex}, dimensions=${headerComponent.position.width}x${headerComponent.position.height}mm`);
     
     const headerTasks: { diskPath: string; paperIndex: number }[] = [];
 
