@@ -75,42 +75,81 @@ function getQwenClient(): OpenAI {
     return qwenClient;
 }
 
-type MatchingClient = {
+type MatchingResolution = {
     provider: "openai" | "qwen";
     client: OpenAI;
+    model: string;
+    modelSource: string;
 };
 
-function resolveMatchingClient(): MatchingClient {
+function resolveMatchingModel(provider: "openai" | "qwen", rawModel?: string): { model: string; source: string } {
+    const trimmed = rawModel?.trim();
+
+    if (provider === "qwen") {
+        if (trimmed && /^(qwen|dashscope)/i.test(trimmed)) {
+            return { model: trimmed, source: "MATCHING_MODEL_NAME" };
+        }
+
+        if (trimmed) {
+            llmLogger.info("[llm] ignoring non-Qwen matching model for Qwen provider", { model: trimmed });
+        }
+
+        const qwenSpecific = optionalEnv("QWEN_MATCHING_MODEL_NAME");
+        if (qwenSpecific) {
+            return { model: qwenSpecific, source: "QWEN_MATCHING_MODEL_NAME" };
+        }
+
+        return { model: "qwen-vl-max-2025-01-25", source: "default-qwen" };
+    }
+
+    if (trimmed && !/^qwen/i.test(trimmed)) {
+        return { model: trimmed, source: "MATCHING_MODEL_NAME" };
+    }
+
+    const openaiSpecific = optionalEnv("OPENAI_MATCHING_MODEL_NAME");
+    if (openaiSpecific) {
+        return { model: openaiSpecific, source: "OPENAI_MATCHING_MODEL_NAME" };
+    }
+
+    return { model: "gpt-4o-mini", source: "default-openai" };
+}
+
+function resolveMatchingClient(): MatchingResolution {
     const providerHint = optionalEnv("MATCHING_PROVIDER")
         ?? optionalEnv("MATCHING_CLIENT")
         ?? optionalEnv("MATCHING_VENDOR");
     const normalizedHint = providerHint?.toLowerCase();
-    const model = optionalEnv("MATCHING_MODEL_NAME")?.toLowerCase() ?? "";
+    const rawModel = optionalEnv("MATCHING_MODEL_NAME");
     const hasQwenCredentials = Boolean(optionalEnv("QWEN_API_KEY"));
 
     if (normalizedHint) {
         if (["qwen", "dashscope", "ali", "aliyun"].includes(normalizedHint)) {
-            return { provider: "qwen", client: getQwenClient() };
+            const resolved = resolveMatchingModel("qwen", rawModel);
+            return { provider: "qwen", client: getQwenClient(), model: resolved.model, modelSource: resolved.source };
         }
         if (["openai", "azure-openai", "azure"].includes(normalizedHint)) {
-            return { provider: "openai", client: getGptClient() };
+            const resolved = resolveMatchingModel("openai", rawModel);
+            return { provider: "openai", client: getGptClient(), model: resolved.model, modelSource: resolved.source };
         }
     }
 
     if (hasQwenCredentials) {
-        return { provider: "qwen", client: getQwenClient() };
+        const resolved = resolveMatchingModel("qwen", rawModel);
+        return { provider: "qwen", client: getQwenClient(), model: resolved.model, modelSource: resolved.source };
     }
 
-    if (model.startsWith("qwen") || model.includes("dashscope")) {
-        return { provider: "qwen", client: getQwenClient() };
+    if ((rawModel?.toLowerCase() ?? "").includes("qwen") || (rawModel?.toLowerCase() ?? "").includes("dashscope")) {
+        const resolved = resolveMatchingModel("qwen", rawModel);
+        return { provider: "qwen", client: getQwenClient(), model: resolved.model, modelSource: resolved.source };
     }
 
-    return { provider: "openai", client: getGptClient() };
+    const resolved = resolveMatchingModel("openai", rawModel);
+    return { provider: "openai", client: getGptClient(), model: resolved.model, modelSource: resolved.source };
 }
 
 export async function recognizeHeader(imagePath: string, options: RecognizeHeaderOptions = {}): Promise<Header> {
-    const model = process.env.MATCHING_MODEL_NAME;
-    const { client, provider } = resolveMatchingClient();
+    const resolution = resolveMatchingClient();
+    const { client, provider, model, modelSource } = resolution;
     const label = typeof options.headerIndex === "number" && typeof options.totalHeaders === "number"
         ? `${options.headerIndex + 1}/${options.totalHeaders}`
         : `${(options.headerIndex ?? 0) + 1}`;
@@ -119,30 +158,50 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         scheduleId: options.scheduleId,
         imagePath,
         model,
+        modelSource,
         header: label,
+        provider,
     });
 
     try {
         const base64Image = imageToBase64(imagePath);
+
+        const openaiContent: ChatCompletionCreateParamsNonStreaming["messages"][number]["content"] = [
+            {
+                type: "image_url",
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}`,
+                },
+            },
+            {
+                type: "text",
+                text: HEADER_PROMPT,
+            },
+        ];
+
+        const qwenContent = [
+            {
+                type: "input_text",
+                text: HEADER_PROMPT,
+            },
+            {
+                type: "input_image",
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}`,
+                },
+            },
+        ];
+
         const request: ChatCompletionCreateParamsNonStreaming = {
             model,
-            messages: [{
-                role: "user",
-                content: [
-                    {
-                        type: "image_url",
-                        image_url: {
-                            url: `data:image/png;base64,${base64Image}`,
-                        },
-                    },
-                    {
-                        type: "text",
-                        text: HEADER_PROMPT,
-                    },
-                ]
-            }],
+            messages: [] as unknown as ChatCompletionCreateParamsNonStreaming["messages"],
             stream: false,
         };
+
+        (request.messages as unknown as Array<{ role: "user"; content: unknown }>).push({
+            role: "user",
+            content: provider === "openai" ? openaiContent : qwenContent,
+        });
 
         if (provider === "openai") {
             request.response_format = zodResponseFormat(HeaderSchema, "header");
@@ -150,11 +209,28 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
 
         const response = await client.chat.completions.create(request);
 
-        const content = response.choices[0]?.message?.content;
+        const rawContent = response.choices[0]?.message?.content;
+        let content: string | undefined;
+        if (typeof rawContent === "string") {
+            content = rawContent;
+        } else if (Array.isArray(rawContent)) {
+            content = (rawContent as Array<Record<string, unknown> | string>).map((part) => {
+                if (typeof part === "string") {
+                    return part;
+                }
+                if (part && typeof part === "object" && "text" in part && typeof (part as { text?: unknown }).text === "string") {
+                    return (part as { text: string }).text;
+                }
+                return "";
+            }).join("");
+        } else if (rawContent && typeof rawContent === "object" && "text" in rawContent && typeof (rawContent as { text?: unknown }).text === "string") {
+            content = (rawContent as { text: string }).text;
+        }
         llmLogger.info("[llm] header recognition succeeded", {
             scheduleId: options.scheduleId,
             header: label,
             provider,
+            model,
         });
 
         try {
@@ -171,6 +247,7 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
                 scheduleId: options.scheduleId,
                 header: label,
                 provider,
+                model,
                 preview: content?.slice(0, 200)
             });
             return {
@@ -185,12 +262,14 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             header: label,
             model,
             provider,
+            modelSource,
         });
         throw new LLMRequestError(message, {
             scheduleId: options.scheduleId,
             header: label,
             model,
             provider,
+            modelSource,
         }, error);
     }
 }
