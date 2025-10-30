@@ -2,7 +2,6 @@ import path from "path";
 import fs from "fs";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
-import { randomUUID } from "crypto";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
 import { ExamResponse } from "../../types/exam";
 import pdf2png from "./pdf2png";
@@ -31,6 +30,7 @@ function toPosix(...segments: string[]): string {
 }
 
 export async function startMatching(documentId: string) {
+    const { nanoid } = await import("nanoid");
     // 1. 先通过documentId获得schedule
     const scheduleData = await strapi.documents('api::schedule.schedule').findOne({
         documentId,
@@ -44,6 +44,7 @@ export async function startMatching(documentId: string) {
 
     const schedule = scheduleData as unknown as ExamSchedule; // 强制将返回结果转换为ExamSchedule类型
     const scheduleResult = ensureScheduleResultObject(schedule);
+    strapi.log.info(`[matching:${documentId}] Step 1: schedule metadata loaded`);
 
     // 2. 拿到pdfId (从result属性中获取)
     const pdfUrl = scheduleResult.pdfUrl as string | undefined; // /uploads/exam_scan_732425fbd9.pdf
@@ -62,6 +63,7 @@ export async function startMatching(documentId: string) {
         strapi.log.error(`startMatching(${documentId}): PDF file not found at ${pdfPath}`);
         return;
     }
+    strapi.log.info(`[matching:${documentId}] Step 2: PDF located at ${pdfPath}`);
 
     // 5. 获得Exam, Class, Teacher数据
     const examData = await strapi.documents('api::exam.exam').findOne({
@@ -85,6 +87,7 @@ export async function startMatching(documentId: string) {
     const teacher = teacherData as unknown as User;
 
     void teacher; // 目前未使用，避免编译警告
+    strapi.log.info(`[matching:${documentId}] Step 3: exam, class, and teacher data loaded`);
 
     // 5. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
     // 5.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
@@ -111,6 +114,7 @@ export async function startMatching(documentId: string) {
         strapi.log.error(`startMatching(${documentId}): ${msg}`);
         return;
     }
+    strapi.log.info(`[matching:${documentId}] Step 4: validated PDF page count (${actualTotalPages} pages)`);
 
     // 5.2 把PDF转换成图片
     // 创建public/pipeline/{scheduleDocumentId}/all文件夹,保存PDF的所有图片
@@ -119,6 +123,7 @@ export async function startMatching(documentId: string) {
         fs.mkdirSync(allImagesDir, { recursive: true });
     }
     await pdf2png(pdfPath, allImagesDir);
+    strapi.log.info(`[matching:${documentId}] Step 5: converted PDF pages to images in ${allImagesDir}`);
 
     // 5.3 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹 public/pipeline/{scheduleDocumentId}/{paperId}
     const papers: Paper[] = []; // 保存所有试卷的id, startPage, endPage
@@ -134,7 +139,7 @@ export async function startMatching(documentId: string) {
     const allImages = fs.readdirSync(allImagesDir).filter(name => name.endsWith('.png')).sort((a, b) => a.localeCompare(b));
 
     for (let i = 0; i < studentCount; i++) {
-        const paperId = randomUUID();
+        const paperId = nanoid();
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
         if (!fs.existsSync(paperDir)) {
             fs.mkdirSync(paperDir, { recursive: true });
@@ -200,6 +205,7 @@ export async function startMatching(documentId: string) {
         // 把Header添加到数组中
         headerImagePaths.push(path.join(paperDir, 'questions', `${headerComponentId}.png`));
     }
+    strapi.log.info(`[matching:${documentId}] Step 6: generated ${papers.length} paper folders with cropped component images`);
 
     // 6. VLM识别姓名和学号
     // 6.1 识别所有header
@@ -209,6 +215,7 @@ export async function startMatching(documentId: string) {
     }));
     strapi.log.info(headerResults as any);
     strapi.log.info(`End recognizing header... for schedule ${schedule.documentId}`);
+    strapi.log.info(`[matching:${documentId}] Step 7: header recognition completed`);
 
     // 6.1 更新papers数组,追加name和studentId
     papers.forEach((paper, index) => {
@@ -246,6 +253,7 @@ export async function startMatching(documentId: string) {
     strapi.log.info(`匹配成功: ${matchedPairs.length} 份试卷`);
     strapi.log.info(`未匹配试卷: ${unmatchedPapers.length} 份`);
     strapi.log.info(`未匹配学生: ${unmatchedStudents.length} 名`);
+    strapi.log.info(`[matching:${documentId}] Step 8: matching comparison complete`);
 
     const updatedResult = {
         ...scheduleResult,
@@ -275,6 +283,7 @@ export async function startMatching(documentId: string) {
             result: JSON.stringify(updatedResult)
         }
     });
+    strapi.log.info(`[matching:${documentId}] Step 9: schedule result updated`);
 
     // END: 当前流水线结束，在前端展示结果，前端通过接口开启下一个流水线
 }
