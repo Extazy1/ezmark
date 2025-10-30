@@ -2,6 +2,7 @@ import path from "path";
 import { Exam, MultipleChoiceQuestionData, QuestionType, UnionComponent } from "../../types/exam";
 import { ExamSchedule } from "../../types/type";
 import { recognizeMCQ } from "./llm";
+import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
 export async function startObjective(documentId: string) {
     // 1. 先通过documentId获得schedule
@@ -10,6 +11,7 @@ export async function startObjective(documentId: string) {
         populate: ['exam', 'class', 'teacher']
     });
     const schedule = scheduleData as unknown as ExamSchedule; //
+    schedule.result = ensureScheduleResult(schedule.result);
 
     // 2. 遍历每一个paper，补充学生documentId和name
     schedule.result.papers = await Promise.all(schedule.result.papers.map(async (paper) => {
@@ -45,7 +47,7 @@ export async function startObjective(documentId: string) {
     await strapi.documents('api::schedule.schedule').update({
         documentId,
         data: {
-            result: JSON.stringify(schedule.result),
+            result: serialiseScheduleResult(schedule.result),
         },
     });
 
@@ -134,7 +136,7 @@ export async function startObjective(documentId: string) {
     await strapi.documents('api::schedule.schedule').update({
         documentId,
         data: {
-            result: JSON.stringify(schedule.result),
+            result: serialiseScheduleResult(schedule.result),
         },
     });
 

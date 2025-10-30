@@ -41,16 +41,38 @@ export function EditorNavbar({ exam, isSaved = true, onSave, onExportPDF }: Edit
         setShowExportDialog(true);
         setExportedPdfUrl(null);
 
-        await onSave(exam)
-        const url = await onExportPDF();
-        setExportedPdfUrl(url);
-        setIsExporting(false);
+        try {
+            await onSave(exam);
+            const url = await onExportPDF();
+            setExportedPdfUrl(url);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "PDF generation failed";
+            toast({
+                variant: "destructive",
+                title: "Export failed",
+                description: message,
+                duration: 2000
+            });
+            setShowExportDialog(false);
+        } finally {
+            setIsExporting(false);
+        }
     }
 
     const handlePreviewPDF = () => {
-        if (exportedPdfUrl) {
-            window.open(exportedPdfUrl, '_blank');
+        if (!exportedPdfUrl) {
+            return;
         }
+
+        const anchor = document.createElement("a");
+        anchor.href = exportedPdfUrl;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.download = "";
+
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
     }
 
     const handleDialogChange = (open: boolean) => {

@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MatchStartProps } from "./interface";
+import { Button } from "@/components/ui/button";
+import { startMatching as startMatchingPipeline } from "@/lib/api";
 
 const loadingMessages = [
     "Identifying students' names and IDs",
@@ -16,8 +18,12 @@ const loadingMessages = [
     "Setting up AI-assisted marking"
 ];
 
-export default function MatchStart({ updateSchedule }: MatchStartProps) {
+export default function MatchStart({ updateSchedule, schedule }: MatchStartProps) {
     const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
+    const [retrying, setRetrying] = useState(false);
+    const [showSlowNotice, setShowSlowNotice] = useState(false);
+
+    const matchError = schedule.result.error?.stage === "MATCH" ? schedule.result.error : null;
 
     useEffect(() => {
         const interval = setInterval(() => {
@@ -30,12 +36,130 @@ export default function MatchStart({ updateSchedule }: MatchStartProps) {
     }, []);
 
     useEffect(() => {
-        const interval = setInterval(() => {
-            // 轮询接口,等待状态更新
-            updateSchedule();
-        }, 500);
-        return () => clearInterval(interval);
-    }, []);
+        console.debug("[pipeline] match progress", {
+            scheduleId: schedule.documentId,
+            progress: schedule.result.progress,
+        });
+    }, [schedule.documentId, schedule.result.progress]);
+
+    useEffect(() => {
+        if (!matchError) {
+            return;
+        }
+
+        console.error("[pipeline] matching failed", {
+            scheduleId: schedule.documentId,
+            message: matchError.message,
+            details: matchError.details,
+        });
+    }, [matchError, schedule.documentId]);
+
+    useEffect(() => {
+        if (matchError) {
+            return;
+        }
+
+        let cancelled = false;
+        let timeout: ReturnType<typeof setTimeout>;
+
+        const poll = async () => {
+            if (cancelled) {
+                return;
+            }
+
+            try {
+                console.debug("[pipeline] polling schedule status during matching");
+                await updateSchedule();
+            } finally {
+                if (!cancelled) {
+                    timeout = setTimeout(poll, 2000);
+                }
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+        };
+    }, [matchError, updateSchedule]);
+
+    useEffect(() => {
+        if (matchError) {
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            setShowSlowNotice(true);
+        }, 60_000);
+
+        return () => clearTimeout(timer);
+    }, [matchError]);
+
+    const handleRetry = async () => {
+        try {
+            setRetrying(true);
+            await startMatchingPipeline(schedule.documentId);
+            await updateSchedule();
+        } catch (error) {
+            console.error("Failed to restart matching", error);
+        } finally {
+            setRetrying(false);
+        }
+    };
+
+    if (matchError) {
+        return (
+            <div className="w-full h-full flex flex-col items-center justify-center px-4 text-center space-y-6">
+                <AlertTriangle className="h-16 w-16 text-destructive" />
+                <div className="space-y-2 max-w-xl">
+                    <h2 className="text-2xl font-semibold">Matching failed</h2>
+                    <p className="text-muted-foreground">
+                        {matchError.message}
+                    </p>
+                    {matchError.details ? (
+                        <p className="text-sm text-muted-foreground/80 whitespace-pre-wrap">
+                            {matchError.details}
+                        </p>
+                    ) : null}
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                    <Button
+                        variant="outline"
+                        onClick={updateSchedule}
+                        disabled={retrying}
+                    >
+                        Refresh status
+                    </Button>
+                    <Button
+                        onClick={handleRetry}
+                        disabled={retrying}
+                        className="gap-2"
+                    >
+                        {retrying ? (
+                            <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Retrying...
+                            </>
+                        ) : (
+                            <>
+                                <RotateCcw className="h-4 w-4" />
+                                Retry matching
+                            </>
+                        )}
+                    </Button>
+                </div>
+                {matchError.timestamp ? (
+                    <p className="text-xs text-muted-foreground/70">
+                        Last failure at {new Date(matchError.timestamp).toLocaleString()}
+                    </p>
+                ) : null}
+            </div>
+        );
+    }
 
     return (
         <div className=" w-full h-full flex flex-col items-center justify-center">
@@ -62,6 +186,12 @@ export default function MatchStart({ updateSchedule }: MatchStartProps) {
                             </div>
                         ))}
                     </div>
+                    {showSlowNotice ? (
+                        <p className="text-sm text-muted-foreground">
+                            Matching is taking longer than usual. Please keep this tab open — you’ll see detailed error logs if we
+                            detect a problem with the uploaded PDF or the AI service.
+                        </p>
+                    ) : null}
                 </div>
             </div>
         </div>

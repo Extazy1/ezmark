@@ -1,10 +1,16 @@
 // src/app/dashboard/page.tsx
-import dynamic from "next/dynamic";
+import DashboardClient from "./DashboardClient";
 
-const DashboardClient = dynamic(() => import("./DashboardClient"), {
-  ssr: false,
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+const createServerRenderInfo = () => ({
+  timestamp: Date.now(),
+  isoTimestamp: new Date().toISOString(),
+  randomSeed: Math.random(),
 });
 
 export default function Page() {
-  return <DashboardClient />;
+  return <DashboardClient serverRenderInfo={createServerRenderInfo()} />;
 }

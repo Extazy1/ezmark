@@ -1,3 +1,5 @@
+import type { Dispatch, SetStateAction } from "react";
+
 export interface LoginResponse {
     jwt: string;
     user: {
@@ -46,12 +48,13 @@ export interface AuthContextObject {
     jwt: string;
     id: string;
     documentId: string;
-    setAuthenticated: (authenticated: boolean) => void;
-    setJwt: (jwt: string) => void;
-    setUserName: (userName: string) => void;
-    setEmail: (email: string) => void;
-    setDocumentId: (documentId: string) => void;
-    setId: (id: string) => void;
+    isLoading: boolean;
+    setAuthenticated: Dispatch<SetStateAction<boolean>>;
+    setJwt: Dispatch<SetStateAction<string>>;
+    setUserName: Dispatch<SetStateAction<string>>;
+    setEmail: Dispatch<SetStateAction<string>>;
+    setDocumentId: Dispatch<SetStateAction<string>>;
+    setId: Dispatch<SetStateAction<string>>;
     logout: () => Promise<void>;
 }
 
@@ -126,6 +129,12 @@ export interface ExamScheduleResult {
     studentPapers: StudentPaper[]; // 学生答卷,根据卷头信息匹配对应的paper
     matchResult: MatchResult;
     statistics: ExamStatistics;
+    error?: {
+        stage: string;
+        message: string;
+        details?: string;
+        timestamp?: string;
+    } | null;
 }
 
 // 试卷匹配结果
@@ -140,6 +149,7 @@ export interface MatchResult {
         papers: {
             paperId: string;
             headerImgUrl: string;
+            reason?: string;
         }[]
     }
     done: boolean;
@@ -153,6 +163,10 @@ export interface Paper {
     studentId: string; // 学生id
     studentDocumentId: string; // 学生documentId
     headerImgUrl: string; // 试卷头图片url
+    headerRecognitionError?: {
+        message: string;
+        details?: string;
+    } | null;
 }
 
 export interface StudentPaper {

@@ -46,6 +46,7 @@ export interface AuthContextObject {
     jwt: string;
     id: string;
     documentId: string;
+    isLoading: boolean;
     setAuthenticated: (authenticated: boolean) => void;
     setJwt: (jwt: string) => void;
     setUserName: (userName: string) => void;
@@ -126,6 +127,12 @@ export interface ExamScheduleResult {
     studentPapers: StudentPaper[]; // 学生答卷,根据卷头信息匹配对应的paper
     matchResult: MatchResult;
     statistics: ExamStatistics;
+    error?: {
+        stage: string;
+        message: string;
+        details?: string;
+        timestamp?: string;
+    } | null;
 }
 
 // 试卷匹配结果
@@ -140,6 +147,7 @@ export interface MatchResult {
         papers: {
             paperId: string;
             headerImgUrl: string;
+            reason?: string;
         }[]
     }
     done: boolean;
@@ -153,6 +161,10 @@ export interface Paper {
     studentId: string; // 学生id
     studentDocumentId: string; // 学生documentId
     headerImgUrl: string; // 试卷头图片url
+    headerRecognitionError?: {
+        message: string;
+        details?: string;
+    } | null;
 }
 
 export interface StudentPaper {

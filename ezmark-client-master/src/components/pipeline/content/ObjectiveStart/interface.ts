@@ -1,3 +1,3 @@
 export interface ObjectiveStartProps {
-    updateSchedule: () => void;
-} 
+    updateSchedule: () => Promise<void>;
+}

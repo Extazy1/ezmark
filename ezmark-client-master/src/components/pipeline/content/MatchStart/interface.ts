@@ -1,3 +1,6 @@
+import { ExamSchedule } from "@/types/types";
+
 export interface MatchStartProps {
-    updateSchedule: () => void;
+    updateSchedule: () => Promise<void>;
+    schedule: ExamSchedule;
 }
