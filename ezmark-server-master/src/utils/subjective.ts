@@ -2,6 +2,7 @@ import path from "path";
 import { ExamResponse, FillInBlankQuestionData, OpenQuestionData } from "../../types/exam";
 import { ExamSchedule, SubjectiveQuestion } from "../../types/type";
 import { SubjectiveInput, SubjectiveResult } from "./schema";
+import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
 export async function startSubjective(documentId: string) {
     console.log(`SUBJECTIVE STARTED FOR ${documentId}`);
@@ -12,6 +13,7 @@ export async function startSubjective(documentId: string) {
         populate: ['exam', 'class', 'teacher']
     });
     const schedule = scheduleData as unknown as ExamSchedule; //
+    schedule.result = ensureScheduleResult(schedule.result);
     const exam = schedule.exam as unknown as ExamResponse;
 
     // 等1秒,没有理由,假装在加载
@@ -46,7 +48,7 @@ export async function startSubjective(documentId: string) {
     await strapi.documents('api::schedule.schedule').update({
         documentId,
         data: {
-            result: JSON.stringify(schedule.result),
+            result: serialiseScheduleResult(schedule.result),
         },
     });
 

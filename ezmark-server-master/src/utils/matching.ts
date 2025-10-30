@@ -5,7 +5,7 @@ import { ExamResponse } from "../../types/exam";
 import { PDFDocument } from "pdf-lib";
 import pdf2png from "./pdf2png";
 import sharp from "sharp";
-import { mmToPixels } from "./tools";
+import { ensureScheduleResult, mmToPixels, serialiseScheduleResult } from "./tools";
 import { recognizeHeader } from "./llm";
 
 const PADDING = 10;
@@ -28,6 +28,17 @@ export async function startMatching(documentId: string) {
         populate: ['exam', 'class', 'teacher']
     });
     const schedule = scheduleData as unknown as ExamSchedule; // 强制将返回结果转换为ExamSchedule类型
+    schedule.result = ensureScheduleResult(schedule.result);
+
+    if (schedule.result.progress !== 'MATCH_START') {
+        schedule.result.progress = 'MATCH_START';
+        await strapi.documents('api::schedule.schedule').update({
+            documentId: schedule.documentId,
+            data: {
+                result: serialiseScheduleResult(schedule.result),
+            },
+        });
+    }
 
     // 2. 拿到pdfId (从result属性中获取)
     const pdfUrl = schedule.result.pdfUrl; // /uploads/exam_scan_732425fbd9.pdf
@@ -200,29 +211,33 @@ export async function startMatching(documentId: string) {
     console.log(`未匹配学生: ${unmatchedStudents.length} 名`);
 
     // 8. 更新Schedule的result和papers，添加匹配结果
+    const updatedResult = {
+        ...schedule.result,
+        papers,
+        progress: 'MATCH_DONE' as const,
+        matchResult: {
+            matched: matchedPairs.map(pair => ({
+                studentId: pair.student.studentId,
+                paperId: pair.paper.paperId,
+                headerImgUrl: path.join('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
+            })),
+            unmatched: {
+                studentIds: unmatchedStudents.map(student => student.studentId),
+                papers: unmatchedPapers.map(paper => ({
+                    paperId: paper.paperId,
+                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+                }))
+            },
+            done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
+        }
+    };
+
+    schedule.result = updatedResult;
+
     await strapi.documents('api::schedule.schedule').update({
         documentId: schedule.documentId,
         data: {
-            result: JSON.stringify({
-                ...schedule.result,
-                papers,
-                progress: 'MATCH_DONE', // 更新progress
-                matchResult: {
-                    matched: matchedPairs.map(pair => ({
-                        studentId: pair.student.studentId,
-                        paperId: pair.paper.paperId,
-                        headerImgUrl: path.join('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
-                    })),
-                    unmatched: {
-                        studentIds: unmatchedStudents.map(student => student.studentId),
-                        papers: unmatchedPapers.map(paper => ({
-                            paperId: paper.paperId,
-                            headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
-                        }))
-                    },
-                    done: unmatchedPapers.length === 0 && unmatchedStudents.length === 0
-                }
-            })
+            result: serialiseScheduleResult(updatedResult),
         }
     });
 

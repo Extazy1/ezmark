@@ -1,6 +1,7 @@
 import { ExamSchedule, ObjectiveQuestion, StudentPaper, SubjectiveQuestion } from "../../types/type";
 import { ExamResponse, QuestionType, MultipleChoiceQuestionData } from "../../types/exam";
 import { ExamQuestionStatistics } from "../../types/type";
+import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
 // 计算分数
 export async function calcResult(documentId: string) {
@@ -10,6 +11,7 @@ export async function calcResult(documentId: string) {
         populate: ['exam', 'class', 'teacher']
     });
     const schedule = scheduleData as unknown as ExamSchedule;
+    schedule.result = ensureScheduleResult(schedule.result);
     const exam = schedule.exam as unknown as ExamResponse;
 
     // 初始化数据结构
@@ -125,7 +127,7 @@ export async function calcResult(documentId: string) {
     await strapi.documents('api::schedule.schedule').update({
         documentId,
         data: {
-            result: JSON.stringify(schedule.result)
+            result: serialiseScheduleResult(schedule.result)
         }
     });
     console.log('Result calculated');
