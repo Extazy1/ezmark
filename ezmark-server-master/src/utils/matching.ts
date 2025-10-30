@@ -17,6 +17,28 @@ const createPaperId = () => randomBytes(8).toString("hex");
 
 const MATCH_STAGE = "MATCH";
 
+const toFiniteNumber = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+
+    return null;
+};
+
+const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
+
 const normaliseUploadsPath = (rawUrl: string) => {
     if (!rawUrl) {
         return "";
@@ -150,8 +172,8 @@ export async function startMatching(documentId: string) {
     const studentCount = classData.students.length;
     const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
     const positionedPageIndices = components
-        .map((component) => component.position?.pageIndex)
-        .filter((pageIndex): pageIndex is number => typeof pageIndex === 'number' && Number.isFinite(pageIndex));
+        .map((component) => toFiniteNumber(component.position?.pageIndex))
+        .filter((pageIndex): pageIndex is number => pageIndex !== null);
 
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBuffer);
@@ -268,7 +290,10 @@ export async function startMatching(documentId: string) {
                 firstPageInfo = imageInfo;
             }
             // 过滤出当前页面的组件
-            const pageComponents = exam.examData.components.filter(com => com.position?.pageIndex === pageIndex);
+            const pageComponents = exam.examData.components.filter(com => {
+                const componentPageIndex = toFiniteNumber(com.position?.pageIndex);
+                return componentPageIndex === pageIndex;
+            });
             console.log(`page-${pageIndex} has ${pageComponents.length} components`)
             // 循环处理每个组件
             for (let compIndex = 0; compIndex < pageComponents.length; compIndex++) {
@@ -281,9 +306,15 @@ export async function startMatching(documentId: string) {
                 const outputFilePath = path.join(questionsDir, `${comp.id}.png`); // 组件的id作为文件名
                 // 将毫米转换为像素
                 const left = 0;
-                const top = Math.max(mmToPixels(rect.top, imageInfo) - PADDING, 0);
+                const componentTop = toFiniteNumber(rect.top);
+                const componentHeight = toFiniteNumber(rect.height);
+                if (componentTop === null || componentHeight === null) {
+                    strapi.log.warn(`startMatching(${documentId}): component ${comp.id} has invalid dimensions on page ${pageIndex}`);
+                    continue;
+                }
                 const width = imageInfo.width!;
-                const height = mmToPixels(rect.height, imageInfo) + PADDING * 2;
+                const top = Math.max(mmToPixels(componentTop, imageInfo) - PADDING, 0);
+                const height = mmToPixels(componentHeight, imageInfo) + PADDING * 2;
                 // 裁剪图片
                 await image.clone().extract({ left, top, width, height }).toFile(outputFilePath);
             }
@@ -394,7 +425,7 @@ export async function startMatching(documentId: string) {
     papers.forEach((paper, index) => {
         paper.name = headerResults[index].name;
         paper.studentId = headerResults[index].studentId;
-        paper.headerImgUrl = path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
+        paper.headerImgUrl = joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`)
         if (!paper.name && paper.headerRecognitionError?.message) {
             paper.name = 'Unknown';
         }
@@ -437,13 +468,13 @@ export async function startMatching(documentId: string) {
             matched: matchedPairs.map(pair => ({
                 studentId: pair.student.studentId,
                 paperId: pair.paper.paperId,
-                headerImgUrl: path.join('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
+                headerImgUrl: joinPipelineUrl('pipeline', schedule.documentId, pair.paper.paperId, 'questions', `${headerComponentId}.png`)
             })),
             unmatched: {
                 studentIds: unmatchedStudents.map(student => student.studentId),
                 papers: unmatchedPapers.map(paper => ({
                     paperId: paper.paperId,
-                    headerImgUrl: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`),
+                    headerImgUrl: joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${headerComponentId}.png`),
                     reason: paper.headerRecognitionError?.message ?? undefined,
                 }))
             },

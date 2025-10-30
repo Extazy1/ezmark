@@ -4,6 +4,8 @@ import { ExamSchedule } from "../../types/type";
 import { recognizeMCQ } from "./llm";
 import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
+const joinPipelineUrl = (...segments: string[]) => path.posix.join(...segments);
+
 export async function startObjective(documentId: string) {
     // 1. 先通过documentId获得schedule
     const scheduleData = await strapi.documents('api::schedule.schedule').findOne({
@@ -78,7 +80,7 @@ export async function startObjective(documentId: string) {
                 studentId: paper.studentId,
                 paperId: paper.paperId,
                 questionId: questionId,
-                answerImage: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`)
+                answerImage: joinPipelineUrl('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`)
             });
         });
     }
