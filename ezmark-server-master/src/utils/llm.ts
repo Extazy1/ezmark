@@ -1,4 +1,5 @@
 import "dotenv/config";
+import fs from "node:fs";
 import OpenAI from "openai";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { HEADER_PROMPT, MCQ_PROMPT, SUBJECTIVE_PROMPT } from "./prompt";
@@ -51,6 +52,23 @@ function getRequiredEnvVar(key: string): string {
 }
 
 const optionalEnv = (key: string): string | undefined => process.env[key]?.trim() || undefined;
+
+const isTruthy = (value?: string): boolean => {
+    if (!value) {
+        return false;
+    }
+    switch (value.toLowerCase()) {
+        case "1":
+        case "true":
+        case "yes":
+        case "on":
+            return true;
+        default:
+            return false;
+    }
+};
+
+const isLLMDebugEnabled = (): boolean => isTruthy(optionalEnv("LLM_DEBUG"));
 
 let gptClient: OpenAI | null = null;
 let qwenClient: OpenAI | null = null;
@@ -154,6 +172,21 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         ? `${options.headerIndex + 1}/${options.totalHeaders}`
         : `${(options.headerIndex ?? 0) + 1}`;
 
+    if (!fs.existsSync(imagePath)) {
+        const meta = {
+            scheduleId: options.scheduleId,
+            imagePath,
+            provider,
+            model,
+            modelSource,
+            header: label,
+        };
+        llmLogger.error("[llm] header image file missing", undefined, meta);
+        throw new LLMRequestError("Header image file not found", meta);
+    }
+
+    const { size: imageSize } = fs.statSync(imagePath);
+
     llmLogger.info("[llm] sending header image for recognition", {
         scheduleId: options.scheduleId,
         imagePath,
@@ -161,10 +194,21 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         modelSource,
         header: label,
         provider,
+        imageBytes: imageSize,
     });
 
     try {
         const base64Image = imageToBase64(imagePath);
+
+        if (isLLMDebugEnabled()) {
+            llmLogger.info("[llm] prepared header image payload", {
+                scheduleId: options.scheduleId,
+                header: label,
+                provider,
+                model,
+                base64Length: base64Image.length,
+            });
+        }
 
         const openaiContent: ChatCompletionCreateParamsNonStreaming["messages"][number]["content"] = [
             {
@@ -186,9 +230,7 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             },
             {
                 type: "input_image",
-                image_url: {
-                    url: `data:image/png;base64,${base64Image}`,
-                },
+                image_url: `data:image/png;base64,${base64Image}`,
             },
         ];
 
@@ -198,10 +240,11 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             stream: false,
         };
 
-        (request.messages as unknown as Array<{ role: "user"; content: unknown }>).push({
-            role: "user",
-            content: provider === "openai" ? openaiContent : qwenContent,
-        });
+        const message = provider === "openai"
+            ? { role: "user", content: openaiContent }
+            : { role: "user", content: qwenContent };
+
+        request.messages = [message] as unknown as ChatCompletionCreateParamsNonStreaming["messages"];
 
         if (provider === "openai") {
             request.response_format = zodResponseFormat(HeaderSchema, "header");
@@ -226,6 +269,18 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         } else if (rawContent && typeof rawContent === "object" && "text" in rawContent && typeof (rawContent as { text?: unknown }).text === "string") {
             content = (rawContent as { text: string }).text;
         }
+        if (isLLMDebugEnabled()) {
+            llmLogger.info("[llm] header recognition raw response", {
+                scheduleId: options.scheduleId,
+                header: label,
+                provider,
+                model,
+                modelSource,
+                choiceIndex: 0,
+                finishReason: response.choices[0]?.finish_reason,
+            });
+        }
+
         llmLogger.info("[llm] header recognition succeeded", {
             scheduleId: options.scheduleId,
             header: label,
@@ -257,20 +312,52 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
         }
     } catch (error) {
         const message = "Failed to send header image to the matching model";
-        llmLogger.error("[llm] header recognition failed", error, {
+        const meta: Record<string, unknown> = {
             scheduleId: options.scheduleId,
             header: label,
             model,
             provider,
             modelSource,
-        });
-        throw new LLMRequestError(message, {
-            scheduleId: options.scheduleId,
-            header: label,
-            model,
-            provider,
-            modelSource,
-        }, error);
+        };
+
+        if (error && typeof error === "object") {
+            const anyErr = error as Record<string, unknown>;
+            if (typeof anyErr["status"] !== "undefined") {
+                meta.status = anyErr["status"];
+            }
+            if (typeof anyErr["code"] !== "undefined") {
+                meta.code = anyErr["code"];
+            }
+            if (typeof anyErr["type"] === "string") {
+                meta.type = anyErr["type"];
+            }
+            if ("error" in anyErr && anyErr.error && typeof anyErr.error === "object") {
+                const errorObj = anyErr.error as Record<string, unknown>;
+                if (typeof errorObj.message === "string") {
+                    meta.providerMessage = errorObj.message;
+                }
+                if (typeof errorObj.type === "string") {
+                    meta.providerType = errorObj.type;
+                }
+            }
+            if ("response" in anyErr && anyErr.response && typeof anyErr.response === "object") {
+                const responseObj = anyErr.response as Record<string, unknown>;
+                if (typeof responseObj["status"] !== "undefined") {
+                    meta.httpStatus = responseObj["status"];
+                }
+                if (typeof responseObj["data"] !== "undefined") {
+                    const dataVal = responseObj["data"];
+                    if (typeof dataVal === "string") {
+                        meta.httpResponsePreview = dataVal.slice(0, 500);
+                    } else if (dataVal && typeof dataVal === "object") {
+                        meta.httpResponseData = JSON.stringify(dataVal);
+                    }
+                }
+            }
+        }
+
+        llmLogger.error("[llm] header recognition failed", error, meta);
+        throw new LLMRequestError(message, meta, error);
     }
 }
 
