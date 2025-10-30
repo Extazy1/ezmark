@@ -136,7 +136,12 @@ export function getComponentCropBox(options: {
 
 export function computeNextComponentTopMap(components: UnionComponent[]) {
     const map = new Map<string, number | null>();
-    const pageBuckets = new Map<number, Array<{ id: string; top: number }>>();
+    const pageBuckets = new Map<number, Array<{
+        id: string;
+        top: number;
+        left: number;
+        right: number;
+    }>>();
 
     for (const component of components) {
         const position = component.position;
@@ -146,8 +151,10 @@ export function computeNextComponentTopMap(components: UnionComponent[]) {
 
         const pageIndex = toFiniteNumber(position.pageIndex);
         const top = toFiniteNumber(position.top);
+        const left = toFiniteNumber(position.left);
+        const width = toFiniteNumber(position.width);
 
-        if (pageIndex === null || top === null) {
+        if (pageIndex === null || top === null || left === null || width === null) {
             continue;
         }
 
@@ -155,7 +162,9 @@ export function computeNextComponentTopMap(components: UnionComponent[]) {
             pageBuckets.set(pageIndex, []);
         }
 
-        pageBuckets.get(pageIndex)!.push({ id: component.id, top });
+        const right = left + width;
+
+        pageBuckets.get(pageIndex)!.push({ id: component.id, top, left, right });
         map.set(component.id, null);
     }
 
@@ -173,10 +182,19 @@ export function computeNextComponentTopMap(components: UnionComponent[]) {
 
             for (let nextIndex = index + 1; nextIndex < entries.length; nextIndex++) {
                 const candidate = entries[nextIndex];
-                if (candidate.top > current.top) {
-                    nextTop = candidate.top;
-                    break;
+
+                if (candidate.top <= current.top) {
+                    continue;
                 }
+
+                const overlapsHorizontally = candidate.left < current.right && candidate.right > current.left;
+
+                if (!overlapsHorizontally) {
+                    continue;
+                }
+
+                nextTop = candidate.top;
+                break;
             }
 
             map.set(current.id, nextTop);
