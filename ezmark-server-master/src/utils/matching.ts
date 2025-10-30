@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
-import { nanoid } from "nanoid";
+import { randomUUID } from "crypto";
 import { Class, ExamSchedule, Paper, Student, User } from "../../types/type";
 import { ExamResponse } from "../../types/exam";
 import pdf2png from "./pdf2png";
@@ -134,7 +134,7 @@ export async function startMatching(documentId: string) {
     const allImages = fs.readdirSync(allImagesDir).filter(name => name.endsWith('.png')).sort((a, b) => a.localeCompare(b));
 
     for (let i = 0; i < studentCount; i++) {
-        const paperId = nanoid();
+        const paperId = randomUUID();
         const paperDir = path.join(rootDir, 'public', 'pipeline', schedule.documentId, paperId);
         if (!fs.existsSync(paperDir)) {
             fs.mkdirSync(paperDir, { recursive: true });
