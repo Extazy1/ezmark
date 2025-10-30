@@ -1,5 +1,6 @@
 import "dotenv/config";
 import OpenAI from "openai";
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { HEADER_PROMPT, MCQ_PROMPT, SUBJECTIVE_PROMPT } from "./prompt";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { Header, HeaderSchema, MCQResult, MCQSchema, SubjectiveInput, SubjectiveResult, SubjectiveSchema } from "./schema";
@@ -74,8 +75,28 @@ function getQwenClient(): OpenAI {
     return qwenClient;
 }
 
+type MatchingClient = {
+    provider: "openai" | "qwen";
+    client: OpenAI;
+};
+
+function resolveMatchingClient(): MatchingClient {
+    const providerHint = optionalEnv("MATCHING_PROVIDER")
+        ?? optionalEnv("MATCHING_CLIENT")
+        ?? optionalEnv("MATCHING_VENDOR");
+    const normalizedHint = providerHint?.toLowerCase();
+    const model = optionalEnv("MATCHING_MODEL_NAME")?.toLowerCase() ?? "";
+
+    if (normalizedHint === "qwen" || model.startsWith("qwen") || model.includes("dashscope")) {
+        return { provider: "qwen", client: getQwenClient() };
+    }
+
+    return { provider: "openai", client: getGptClient() };
+}
+
 export async function recognizeHeader(imagePath: string, options: RecognizeHeaderOptions = {}): Promise<Header> {
     const model = process.env.MATCHING_MODEL_NAME;
+    const { client, provider } = resolveMatchingClient();
     const label = typeof options.headerIndex === "number" && typeof options.totalHeaders === "number"
         ? `${options.headerIndex + 1}/${options.totalHeaders}`
         : `${(options.headerIndex ?? 0) + 1}`;
@@ -88,7 +109,8 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
     });
 
     try {
-        const response = await getGptClient().chat.completions.create({
+        const base64Image = imageToBase64(imagePath);
+        const request: ChatCompletionCreateParamsNonStreaming = {
             model,
             messages: [{
                 role: "user",
@@ -96,7 +118,7 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
                     {
                         type: "image_url",
                         image_url: {
-                            url: `data:image/png;base64,${imageToBase64(imagePath)}`,
+                            url: `data:image/png;base64,${base64Image}`,
                         },
                     },
                     {
@@ -105,22 +127,37 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
                     },
                 ]
             }],
-            response_format: zodResponseFormat(HeaderSchema, 'header')
-        });
+            stream: false,
+        };
 
-        const content = response.choices[0].message.content;
+        if (provider === "openai") {
+            request.response_format = zodResponseFormat(HeaderSchema, "header");
+        }
+
+        const response = await client.chat.completions.create(request);
+
+        const content = response.choices[0]?.message?.content;
         llmLogger.info("[llm] header recognition succeeded", {
             scheduleId: options.scheduleId,
             header: label,
+            provider,
         });
 
         try {
-            const header = JSON.parse(content ?? "{}");
-            return header as Header;
+            const parsedContent: unknown = typeof content === "string" && content.trim().length > 0
+                ? JSON.parse(content)
+                : {};
+            const headerData = HeaderSchema.parse(parsedContent);
+            return {
+                name: headerData.name,
+                studentId: headerData.studentId,
+            } satisfies Header;
         } catch (parseError) {
             llmLogger.error("[llm] failed to parse header recognition response", parseError, {
                 scheduleId: options.scheduleId,
                 header: label,
+                provider,
+                preview: content?.slice(0, 200)
             });
             return {
                 name: 'Unknown',
@@ -133,11 +170,13 @@ export async function recognizeHeader(imagePath: string, options: RecognizeHeade
             scheduleId: options.scheduleId,
             header: label,
             model,
+            provider,
         });
         throw new LLMRequestError(message, {
             scheduleId: options.scheduleId,
             header: label,
             model,
+            provider,
         }, error);
     }
 }
