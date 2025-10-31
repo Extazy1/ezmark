@@ -28,11 +28,18 @@ export async function startSubjective(documentId: string) {
 
     // 3. 遍历每一个学生，创建SubjectiveQuestion
     schedule.result.studentPapers.forEach((studentPaper, index) => {
+        // Find the corresponding paper from result.papers to get questionImageMap
+        const paper = schedule.result.papers.find(p => p.paperId === studentPaper.paperId);
+        
         schedule.result.studentPapers[index].subjectiveQuestions = subjectiveQuestions.map((question) => {
+            // Get the actual image path from questionImageMap
+            const imageUrl = paper?.questionImageMap?.[question.id] || 
+                           toPosixPath('pipeline', schedule.documentId, studentPaper.paperId, 'questions', `${question.id}.png`);
+            
             return {
                 questionId: question.id,
                 score: -1, // 初始分数为-1
-                imageUrl: toPosixPath('pipeline', schedule.documentId, studentPaper.paperId, 'questions', `${question.id}.png`),
+                imageUrl,
                 done: false,
                 aiSuggestion: {
                     reasoning: '',
