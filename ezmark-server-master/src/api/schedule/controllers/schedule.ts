@@ -75,7 +75,10 @@ export default factories.createCoreController('api::schedule.schedule', ({ strap
         try {
             const { question, answer, score, imageUrl } = ctx.request.body;
             const rootDir = cwd();
-            const imagePath = path.join(rootDir, 'public', imageUrl);
+            // imageUrl should be a relative path like 'pipeline/xxx/student-1/questions/xxx.png'
+            // Remove leading slash if present
+            const cleanImageUrl = imageUrl.startsWith('/') ? imageUrl.substring(1) : imageUrl;
+            const imagePath = path.join(rootDir, 'public', cleanImageUrl);
             const result = await askSubjective({ question, answer, score, imageUrl: imagePath });
             return result;
         } catch (error) {

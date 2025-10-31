@@ -570,6 +570,16 @@ export async function startMatching(documentId: string) {
         if ((studentIndex + 1) % 10 === 0 || studentIndex === studentCount - 1) {
             logMatchStep(documentId, `extracted ${extractedComponentCount} components for paper ${studentIndex + 1}/${studentCount}`);
         }
+        
+        // Log extracted component details for debugging
+        const extractedComponentIds = Object.keys(questionImageMap);
+        if (extractedComponentIds.length < questionComponents.length) {
+            const missingComponents = questionComponents.filter(c => !questionImageMap[c.id]);
+            logMatchStep(documentId, `[WARNING] Paper ${paperId}: extracted ${extractedComponentIds.length}/${questionComponents.length} question components`);
+            missingComponents.forEach(c => {
+                logMatchStep(documentId, `  - Missing: ${c.id} (type: ${c.type}, pageIndex: ${c.position?.pageIndex})`);
+            });
+        }
     }
     
     logMatchStep(documentId, `completed splitting: created ${papers.length} papers with ${headerTasks.length} headers`);

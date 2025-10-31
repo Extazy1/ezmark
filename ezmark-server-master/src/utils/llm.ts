@@ -413,35 +413,87 @@ export async function recognizeMCQ(imagePath: string): Promise<MCQResult> {
 
 export async function askSubjective(question: SubjectiveInput): Promise<SubjectiveResult> {
     console.log('LLM SUBJECTIVE START');
-    console.log('MODEL NAME', process.env.SUBJECTIVE_MODEL_NAME);
+    
+    // Determine provider and model (support both GPT and Qwen)
+    const providerHint = optionalEnv("SUBJECTIVE_PROVIDER") ?? optionalEnv("MATCHING_PROVIDER");
+    const rawModel = optionalEnv("SUBJECTIVE_MODEL_NAME") ?? "openai/gpt-4o-mini";
+    const normalizedHint = providerHint?.toLowerCase();
+    const hasQwenCredentials = Boolean(optionalEnv("QWEN_API_KEY"));
+    
+    let provider: "openai" | "qwen" = "openai";
+    let client: OpenAI;
+    let model: string = rawModel;
+    
+    // Determine provider based on hints and credentials
+    if (normalizedHint && ["qwen", "dashscope", "ali", "aliyun"].includes(normalizedHint)) {
+        provider = "qwen";
+    } else if (rawModel.toLowerCase().includes("qwen") || rawModel.toLowerCase().includes("dashscope")) {
+        provider = "qwen";
+    } else if (hasQwenCredentials && !normalizedHint) {
+        // If no explicit provider but has Qwen credentials, prefer Qwen
+        provider = "qwen";
+        model = optionalEnv("QWEN_SUBJECTIVE_MODEL_NAME") ?? "qwen-vl-max-2025-01-25";
+    }
+    
+    client = provider === "qwen" ? getQwenClient() : getGptClient();
+    
+    console.log('MODEL NAME', model);
+    console.log('PROVIDER', provider);
     console.log(question);
-    const response = await getGptClient().chat.completions.create({
-        model: process.env.SUBJECTIVE_MODEL_NAME,
-        messages: [{
-            role: "user",
-            content: [
-                {
-                    type: "image_url",
-                    image_url: {
-                        url: `data:image/png;base64,${imageToBase64(question.imageUrl)}`,
-                    },
-                },
-                {
-                    type: "text",
-                    text: SUBJECTIVE_PROMPT,
-                },
-            ]
-        }],
-        response_format: zodResponseFormat(SubjectiveSchema, 'answer')
-    });
+    
+    const base64Image = imageToBase64(question.imageUrl);
+    
+    // Build prompt with question context
+    const promptWithContext = `${SUBJECTIVE_PROMPT}
+    
+Question: ${question.question}
+Reference Answer: ${question.answer}
+Total Score: ${question.score}`;
+    
+    const content: ChatCompletionCreateParamsNonStreaming["messages"][number]["content"] = [
+        {
+            type: "text",
+            text: promptWithContext,
+        },
+        {
+            type: "image_url",
+            image_url: {
+                url: `data:image/png;base64,${base64Image}`,
+            },
+        },
+    ];
+    
+    const request: ChatCompletionCreateParamsNonStreaming = {
+        model,
+        messages: [{ role: "user", content }],
+        stream: false,
+    };
+    
+    // Only add response_format for OpenAI (Qwen doesn't support it consistently)
+    if (provider === "openai") {
+        request.response_format = zodResponseFormat(SubjectiveSchema, 'answer');
+    }
+    
+    const response = await client.chat.completions.create(request);
+    
     console.log('LLM SUBJECTIVE END');
-    console.log(response.choices[0].message.content);
+    const rawContent = response.choices[0]?.message?.content;
+    console.log(rawContent);
+    
     try {
-        const result = JSON.parse(response.choices[0].message.content!);
-        return result as SubjectiveResult;
+        // Clean markdown code blocks from response (Qwen sometimes wraps JSON in ```json ... ```)
+        let cleanedContent = rawContent?.trim() || "";
+        if (cleanedContent.startsWith("```")) {
+            cleanedContent = cleanedContent.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+        }
+        
+        const result = JSON.parse(cleanedContent);
+        return SubjectiveSchema.parse(result) as SubjectiveResult;
     } catch (error) {
+        console.error('Failed to parse subjective response:', error);
+        console.error('Raw content:', rawContent);
         return {
-            reasoning: 'Unknown',
+            reasoning: 'Failed to parse AI response',
             ocrResult: 'Unknown',
             suggestion: 'Failed to Generate Result',
             score: -1
