@@ -28,22 +28,10 @@ export default function MatchDone({ schedule, classData, setSchedule }: MatchDon
     const [isLoading, setIsLoading] = useState(false);
     const [isDone, setIsDone] = useState(schedule.result.matchResult.done);
 
-    useEffect(() => {
-        schedule.result.matchResult.unmatched.papers.forEach((paper) => {
-            if (paper.reason) {
-                console.warn("[pipeline] unmatched paper due to recognition issue", {
-                    scheduleId: schedule.documentId,
-                    paperId: paper.paperId,
-                    reason: paper.reason,
-                });
-            }
-        });
-    }, [schedule.documentId, schedule.result.matchResult.unmatched.papers]);
-
     // 计算匹配结果
     const matchedStudents = schedule.result.matchResult.matched.length;
-    const unmatchedStudentEntries = schedule.result.matchResult.unmatched.studentIds.length;
-    const unmatchedPapersCount = schedule.result.matchResult.unmatched.papers.length;
+    const totalStudents = classData.students.length;
+    const unmatchedStudents = totalStudents - matchedStudents;
 
     const onConnect = useCallback((params: Connection) => {
         // 如果任何一个node以经连接过，则不连接
@@ -202,11 +190,7 @@ export default function MatchDone({ schedule, classData, setSchedule }: MatchDon
                             </div>
                             <div className="flex items-center gap-2">
                                 <AlertTriangle className="h-5 w-5 text-amber-500" />
-                                <span className="font-medium">Unmatched Student Name Entries: {unmatchedStudentEntries}</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <AlertTriangle className="h-5 w-5 text-amber-500" />
-                                <span className="font-medium">Unmatched Scanned Answer Sheets: {unmatchedPapersCount}</span>
+                                <span className="font-medium">Unmatched: {unmatchedStudents}</span>
                             </div>
                         </div>
                     </div>

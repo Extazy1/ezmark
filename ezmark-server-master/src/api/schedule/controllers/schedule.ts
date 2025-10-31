@@ -75,10 +75,36 @@ export default factories.createCoreController('api::schedule.schedule', ({ strap
         try {
             const { question, answer, score, imageUrl } = ctx.request.body;
             const rootDir = cwd();
-            const imagePath = path.join(rootDir, 'public', imageUrl);
+            
+            console.log('[askSubjective] Received imageUrl:', imageUrl);
+            
+            let imagePath: string;
+            
+            // Check if imageUrl is already an absolute path
+            if (path.isAbsolute(imageUrl)) {
+                // If it's already absolute, use it directly
+                imagePath = imageUrl;
+                console.log('[askSubjective] Using absolute path:', imagePath);
+            } else {
+                // imageUrl is a relative path like 'pipeline/xxx/student-1/questions/xxx.png'
+                const cleanImageUrl = imageUrl.startsWith('/') ? imageUrl.substring(1) : imageUrl;
+                imagePath = path.join(rootDir, 'public', cleanImageUrl);
+                console.log('[askSubjective] Constructed path from relative:', imagePath);
+            }
+            
+            // Verify file exists
+            const fs = require('fs');
+            if (!fs.existsSync(imagePath)) {
+                console.error('[askSubjective] File not found at:', imagePath);
+                console.error('[askSubjective] rootDir:', rootDir);
+                console.error('[askSubjective] Original imageUrl:', imageUrl);
+                throw new Error(`Image file not found: ${imagePath}`);
+            }
+            
             const result = await askSubjective({ question, answer, score, imageUrl: imagePath });
             return result;
         } catch (error) {
+            console.error('[askSubjective] Error:', error);
             ctx.throw(500, error);
         }
     },

@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs";
 import { Exam, MultipleChoiceQuestionData, QuestionType, UnionComponent } from "../../types/exam";
 import { ExamSchedule } from "../../types/type";
 import { recognizeMCQ } from "./llm";
@@ -70,28 +71,56 @@ export async function startObjective(documentId: string) {
     const publicDir = path.join(rootDir, 'public');
 
     // 6.1 收集所有学生的所有答案图片
-    const allStudentAnswers = [];
+    const allStudentAnswers = [] as {
+        studentId: string;
+        paperId: string;
+        questionId: string;
+        answerImage: string;
+    }[];
     for (const question of objectiveQuestions) {
         const questionId = question.id;
-        schedule.result.papers.forEach((paper) => {
+        for (const paper of schedule.result.papers) {
+            const answerImage = paper.questionImageMap?.[questionId];
+            if (!answerImage) {
+                strapi.log.error(`[objective:${documentId}] Missing cropped image for question ${questionId} on paper ${paper.paperId}`);
+                continue;
+            }
+
             allStudentAnswers.push({
                 studentId: paper.studentId,
                 paperId: paper.paperId,
-                questionId: questionId,
-                answerImage: path.join('pipeline', schedule.documentId, paper.paperId, 'questions', `${questionId}.png`)
+                questionId,
+                answerImage,
             });
-        });
+        }
     }
 
     // 6.2 一次性发送所有请求
     console.log(`LLM starts to process all MCQ answers, there are ${allStudentAnswers.length} answers`);
     const allLlmResults = await Promise.all(allStudentAnswers.map(async (studentAnswer) => {
         const imagePath = path.join(publicDir, studentAnswer.answerImage);
-        const answer = await recognizeMCQ(imagePath);
-        return {
-            ...studentAnswer,
-            result: answer
-        };
+
+        if (!fs.existsSync(imagePath)) {
+            strapi.log.error(`[objective:${documentId}] Answer image missing at ${imagePath}`);
+            return {
+                ...studentAnswer,
+                result: { answer: ['Unknown'] },
+            };
+        }
+
+        try {
+            const answer = await recognizeMCQ(imagePath);
+            return {
+                ...studentAnswer,
+                result: answer
+            };
+        } catch (error) {
+            strapi.log.error(`[objective:${documentId}] Failed to recognize MCQ for ${studentAnswer.paperId}/${studentAnswer.questionId}`, error instanceof Error ? error : undefined);
+            return {
+                ...studentAnswer,
+                result: { answer: ['Unknown'] },
+            };
+        }
     }));
     console.log(`All LLM requests have been processed`);
 
@@ -121,6 +150,10 @@ export async function startObjective(documentId: string) {
         // 遍历所有学生试卷中的客观题
         for (const studentPaper of schedule.result.studentPapers) {
             const studentAnswer = studentPaper.objectiveQuestions.find((answer) => answer.questionId === questionId);
+            if (!studentAnswer) {
+                strapi.log.warn(`[objective:${documentId}] No answer found for question ${questionId} in paper ${studentPaper.paperId}`);
+                continue;
+            }
             if (studentAnswer.llmUnknown) continue // LLM识别失败，跳过不计算
             // 比较学生答案和标准答案数组,如果完全匹配(顺序可以不一样)，则得分，否则0分
             if (studentAnswer.studentAnswer.sort().join(',') === questionAnswer.sort().join(',')) {

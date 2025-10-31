@@ -2,11 +2,21 @@ import sharp from "sharp";
 import fs from 'fs'
 import { ExamScheduleResult } from "../../types/type";
 
+type Axis = "x" | "y";
+
 // 转换毫米到像素的函数
-export function mmToPixels(mm: number, imageInfo: sharp.Metadata, pageWidthMM: number = 210): number {
-    // A4尺寸为210mm x 297mm
-    // 计算转换比例：图像宽度（像素）/ 页面宽度（毫米）
-    const pixelsPerMm = imageInfo.width! / pageWidthMM;
+export function mmToPixels(mm: number, imageInfo: sharp.Metadata, axis: Axis): number {
+    if (!Number.isFinite(mm)) {
+        return 0;
+    }
+
+    const dimension = axis === "x" ? imageInfo.width : imageInfo.height;
+    if (!dimension || dimension <= 0) {
+        return 0;
+    }
+
+    const pageSizeMm = axis === "x" ? 210 : 297;
+    const pixelsPerMm = dimension / pageSizeMm;
     return Math.round(mm * pixelsPerMm);
 }
 
