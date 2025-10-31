@@ -209,8 +209,43 @@ export async function startMatching(documentId: string) {
 
     logMatchStep(documentId, `loaded metadata - Exam: "${exam.projectName || 'N/A'}", Class: ${classData.students?.length || 0} students, Teacher: "${teacher.userName || 'N/A'}"`);
 
-    // 5. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
-    // 5.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
+    // 5. 验证 exam 组件是否有 position 数据
+    const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
+    logMatchStep(documentId, `exam has ${components.length} components`);
+    
+    // 检查所有题目组件是否有 position
+    const QUESTION_TYPES = ['multiple-choice', 'fill-in-blank', 'open'];
+    const questionComponents = components.filter(c => QUESTION_TYPES.includes(c.type));
+    const questionsWithoutPosition = questionComponents.filter(c => !c.position || typeof c.position.pageIndex !== 'number');
+    
+    if (questionsWithoutPosition.length > 0) {
+        const missingDetails = questionsWithoutPosition
+            .map(c => `  • Question ${(c as any).questionNumber || 'N/A'} (${c.type})`)
+            .join('\n');
+        
+        const errorMsg = [
+            `❌ Exam Setup Incomplete: ${questionsWithoutPosition.length} question(s) missing position data`,
+            '',
+            'Missing questions:',
+            missingDetails,
+            '',
+            '📝 Required Action:',
+            '1. Open the exam in the Editor',
+            '2. Wait for all components to render (this calculates their positions)',
+            '3. Save the exam',
+            '4. Return here and upload the PDF again',
+            '',
+            '⚠️ Without component positions, questions cannot be extracted from scanned PDFs and grading is impossible.',
+        ].join('\n');
+        
+        await markMatchError(schedule, documentId, errorMsg);
+        return;
+    }
+    
+    logMatchStep(documentId, `validated: all ${questionComponents.length} question components have position data`);
+
+    // 6. 根据Exam的数据分割PDF文件成多份试卷，保存到不同的文件夹
+    // 6.1 校验PDF的页数是否等于(学生人数 * 试卷页数)
     const studentCount = classData.students?.length || 0;
     
     if (studentCount <= 0) {
@@ -219,8 +254,6 @@ export async function startMatching(documentId: string) {
     }
     
     logMatchStep(documentId, `class has ${studentCount} students`);
-    const components = Array.isArray(exam.examData?.components) ? exam.examData.components : [];
-    logMatchStep(documentId, `exam has ${components.length} components`);
     
     const positionedPageIndices = components
         .map((component) => component.position?.pageIndex)

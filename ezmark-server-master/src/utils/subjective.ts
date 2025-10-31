@@ -4,6 +4,8 @@ import { ExamSchedule, SubjectiveQuestion } from "../../types/type";
 import { SubjectiveInput, SubjectiveResult } from "./schema";
 import { ensureScheduleResult, serialiseScheduleResult } from "./tools";
 
+const toPosixPath = (...segments: string[]) => path.posix.join(...segments);
+
 export async function startSubjective(documentId: string) {
     console.log(`SUBJECTIVE STARTED FOR ${documentId}`);
 
@@ -30,7 +32,7 @@ export async function startSubjective(documentId: string) {
             return {
                 questionId: question.id,
                 score: -1, // 初始分数为-1
-                imageUrl: path.join('pipeline', schedule.documentId, studentPaper.paperId, 'questions', `${question.id}.png`),
+                imageUrl: toPosixPath('pipeline', schedule.documentId, studentPaper.paperId, 'questions', `${question.id}.png`),
                 done: false,
                 aiSuggestion: {
                     reasoning: '',
