@@ -436,11 +436,11 @@ export async function startMatching(documentId: string) {
                 }
 
                 if (!rect || !imageInfo.width || !imageInfo.height) {
-                    const msg = `skipping component ${comp.id} on page ${pageOffset}: invalid position or image metadata`;
+                    const msg = `skipping component ${comp.id} (type: ${comp.type}) on page ${pageOffset}: invalid position or image metadata`;
                     if (isHeaderComponent) {
                         logMatchStep(documentId, `[HEADER WARNING] ${msg} - rect=${!!rect}, imageInfo.width=${imageInfo.width}, imageInfo.height=${imageInfo.height}`);
                     } else {
-                        logMatchStep(documentId, msg);
+                        logMatchStep(documentId, `[COMPONENT WARNING] ${msg}`);
                     }
                     continue;
                 }
@@ -540,6 +540,16 @@ export async function startMatching(documentId: string) {
     }
     
     logMatchStep(documentId, `completed splitting: created ${papers.length} papers with ${headerTasks.length} headers`);
+
+    // Check for components without position data
+    const componentsWithoutPosition = components.filter(c => !c.position || typeof c.position.pageIndex !== 'number');
+    if (componentsWithoutPosition.length > 0) {
+        logMatchStep(documentId, `[WARNING] ${componentsWithoutPosition.length} component(s) have no position data and will not be extracted:`);
+        componentsWithoutPosition.forEach(c => {
+            logMatchStep(documentId, `  - ${c.id} (type: ${c.type})`);
+        });
+        logMatchStep(documentId, `Please render the exam in the editor to calculate component positions, or these components will be unavailable for grading.`);
+    }
 
     // 6. VLM识别姓名和学号
     // 6.1 识别所有header

@@ -150,6 +150,10 @@ export async function startObjective(documentId: string) {
         // 遍历所有学生试卷中的客观题
         for (const studentPaper of schedule.result.studentPapers) {
             const studentAnswer = studentPaper.objectiveQuestions.find((answer) => answer.questionId === questionId);
+            if (!studentAnswer) {
+                strapi.log.warn(`[objective:${documentId}] No answer found for question ${questionId} in paper ${studentPaper.paperId}`);
+                continue;
+            }
             if (studentAnswer.llmUnknown) continue // LLM识别失败，跳过不计算
             // 比较学生答案和标准答案数组,如果完全匹配(顺序可以不一样)，则得分，否则0分
             if (studentAnswer.studentAnswer.sort().join(',') === questionAnswer.sort().join(',')) {
